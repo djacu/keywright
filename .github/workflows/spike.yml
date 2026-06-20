@@ -1,0 +1,55 @@
+name: spike
+
+# Throwaway feasibility spike (removable). Confirms:
+#   (1) KVM-accelerated nixosTest runs on a public GitHub-hosted runner.
+#   (2) A representative air-gapped NixOS ISO builds within the runner budget,
+#       and measures the real closure size vs the 14 GB root-fs limit.
+
+on:
+  workflow_dispatch: {}
+  push:
+    branches: [main]
+    paths:
+      - "spikes/**"
+      - ".github/workflows/spike.yml"
+
+jobs:
+  kvm-probe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: DeterminateSystems/nix-installer-action@main
+      - name: KVM device + env
+        run: |
+          echo "DETERMINATE_NIX_KVM=${DETERMINATE_NIX_KVM:-<unset>}"
+          ls -l /dev/kvm || echo "NO /dev/kvm present"
+          if [ -w /dev/kvm ]; then echo "/dev/kvm is writable (KVM usable)"; else echo "/dev/kvm NOT writable"; fi
+      - name: Run trivial nixosTest (fast boot => KVM-accelerated; slow => TCG fallback)
+        run: |
+          SECONDS=0
+          nix build ./spikes#checks.x86_64-linux.kvm-probe -L --no-link
+          echo "KVM_PROBE_BUILD_SECONDS=$SECONDS"
+
+  iso-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Disk before reclaim
+        run: df -h / /mnt 2>/dev/null || df -h
+      # Reclaim the large /mnt ephemeral disk so the build cannot ENOSPC; we still
+      # measure total store size below to learn whether bare 14 GB would have sufficed.
+      - uses: wimpysworld/nothing-but-nix@main
+      - uses: DeterminateSystems/nix-installer-action@main
+      - name: Build representative air-gapped ISO (cold cache) and measure budget
+        run: |
+          SECONDS=0
+          nix build ./spikes#packages.x86_64-linux.iso-spike -L
+          echo "ISO_BUILD_SECONDS=$SECONDS"
+          echo "===== ISO file size ====="
+          ls -lh result/iso/*.iso
+          echo "===== ISO runtime closure size (nix path-info -S) ====="
+          nix path-info -Sh ./result
+          echo "===== total /nix/store size (proxy for peak build closure) ====="
+          du -sh /nix/store
+          echo "===== disk after ====="
+          df -h / /mnt 2>/dev/null || df -h
