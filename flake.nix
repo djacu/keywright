@@ -1,6 +1,6 @@
 {
 
-  description = "<project name>";
+  description = "Keywright: air-gapped, auditable YubiKey/OpenPGP key provisioning (NixOS)";
 
   inputs = {
     disko.inputs.nixpkgs.follows = "nixpkgs";

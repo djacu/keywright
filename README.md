@@ -1,6 +1,11 @@
-# <project name>
+# Keywright
 
-<project description>
+Keywright provisions, backs up, and audits OpenPGP keys on hardware security keys
+(e.g. YubiKey) from an air-gapped NixOS live environment — built with corporate
+security teams in mind.
+
+> **Status:** early design phase. Architecture and specs are still being worked
+> out; the CLI/TUI and the live ISO are not yet implemented.
 
 ## Project Structure
 
