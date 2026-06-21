@@ -3,8 +3,6 @@
   description = "Keywright: air-gapped, auditable YubiKey/OpenPGP key provisioning (NixOS)";
 
   inputs = {
-    disko.inputs.nixpkgs.follows = "nixpkgs";
-    disko.url = "github:nix-community/disko";
     nixpkgs-lib.url = "github:nix-community/nixpkgs.lib";
     nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable";
     treefmt-nix.inputs.nixpkgs.follows = "nixpkgs";

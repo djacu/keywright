@@ -45,8 +45,6 @@ genAttrs (getDirectoryNames ./.) (
         # nixpkgs.pkgs = inputs.self.legacyPackages.x86_64-linux;
       }
 
-      inputs.disko.nixosModules.disko
-
       (import ./${host}/configuration.nix)
 
     ];
