@@ -6,7 +6,7 @@ Scope: OpenPGP provisioning on YubiKey 5 FIPS Series (firmware 5.7.4, CMVP cert 
 
 Legend: ★ recommended · ✓ approved · ⚠ allowed-with-conditions · ✗ forbidden · – not addressed
 
----
+______________________________________________________________________
 
 ## 1. Matrix
 
@@ -15,7 +15,7 @@ Legend: ★ recommended · ✓ approved · ⚠ allowed-with-conditions · ✗ fo
 | **RSA-2048** (certify/sign/auth) | ✓ approved — CAVP-tested in cert #5291 | ✓ approved — min RSA size, 112-bit | ⚠ conditions — 112-bit, **disallowed for applying protection from 2031** | ✗ forbidden — below CNSA 1.0 RSA≥3072 floor | ✗ deprecated — below 3000-bit min; transitional conformance expired end-2023 |
 | **RSA-3072** (certify/sign/auth) | ✓ approved — CAVP-tested | ✓ approved — 128-bit | ✓ approved — 128-bit, survives 2031 transition | ⚠ deprecated — meets CNSA 1.0 floor, **transitional only, retire by 2030/2033** | ★ recommended — meets 3000-bit min |
 | **RSA-4096** (certify/sign/auth) | ✓ approved — CAVP-tested, largest RSA in applet | ✓ approved — ≥128-bit | ✓ approved — ≥128-bit, acceptable indefinitely | ⚠ deprecated — exceeds floor, **transitional only** | ★ recommended — exceeds 3000-bit min |
-| **RSA encryption subkey** (RSA decipher, OpenPGP) | ✗ forbidden — **blocked in OpenPGP FIPS Approved Mode** (use ECDH P-curve) | n/a (encryption-use) | (key-transport <2 yr if used) | ✗ forbidden — RSA transitional/deprecated | ⚠ conditions — RSA key exchange recommended **only until end-2031** |
+| **RSA encryption subkey** (RSA decipher, OpenPGP) | ✗ forbidden — **blocked in OpenPGP FIPS Approved Mode** (use ECDH P-curve) | n/a (encryption-use) | (key-transport \<2 yr if used) | ✗ forbidden — RSA transitional/deprecated | ⚠ conditions — RSA key exchange recommended **only until end-2031** |
 | **ECDSA P-256** (nistp256) | ✓ approved — CAVP-tested, OpenPGP SigGen | ✓ approved — SP 800-186 recommended, 128-bit | ✓ approved — 128-bit, indefinite | ✗ forbidden — CNSA is P-384 only | ⚠ conditions — meets q≥2²⁵⁰; **not named in Table B.3 (only Brainpool listed)** |
 | **ECDSA P-384** (nistp384) | ✓ approved — CAVP-tested | ✓ approved — recommended, 192-bit | ✓ approved — 192-bit, indefinite | ⚠ deprecated — **only CNSA-acceptable classical curve, retire by 2030/2033** | ⚠ conditions — meets q≥2²⁵⁰; not named in Table B.3 |
 | **ECDSA P-521** (nistp521) | ✓ approved — CAVP-tested | ✓ approved — recommended, 256-bit | ✓ approved — 256-bit, indefinite | ✗ forbidden — not in CNSA suite (P-384 only) | ⚠ conditions — meets q≥2²⁵⁰; not named in Table B.3 |
@@ -31,7 +31,7 @@ Legend: ★ recommended · ✓ approved · ⚠ allowed-with-conditions · ✗ fo
 | **SHA-512** | ✓ approved — CAVP-tested | ✓ approved | ✓ approved — 256-bit | ✓ approved — CNSA 2.0 (SHA-384/512) | ★ recommended — Table 4.1 |
 | **Subkey expiration / cryptoperiod** | – not addressed — module validation is silent | – not addressed — 186-5/800-186 silent | ★ recommended — Table 1 concrete numbers (see §3) | – not addressed (only migration deadlines) | – not addressed (only algorithm horizons; see §3) |
 
----
+______________________________________________________________________
 
 ## 2. Display-tag recommendations (per option)
 
@@ -55,7 +55,7 @@ Show the **regime-qualified** tag, never a bare "FIPS" or "approved." Options fl
 | **SHA-384** | "Approved across all five regimes (FIPS, 186-5, 800-57, CNSA, BSI)" |
 | **SHA-512** | "Approved across all five regimes" |
 
----
+______________________________________________________________________
 
 ## 3. Key lifetime / cryptoperiod guidance (concrete numbers)
 
@@ -71,7 +71,7 @@ These drive Keywright's expiration **defaults**. Distinguish operational cryptop
 
 **Suggested default**: 1–2 year renewable subkeys (SP 800-57-aligned), with a hard ceiling so that an encryption subkey does not validate past **end-2031** (BSI) and any NSS-targeted classical key expires before **2030/2033** (CNSA). Note the **2030/2031 SP 800-57 dates are an algorithm-strength sunset (112→128-bit), not a cryptoperiod** — RSA-2048 becomes disallowed for *applying* protection in 2031 but stays legacy-valid for verify/decrypt.
 
----
+______________________________________________________________________
 
 ## 4. Hardware note
 
@@ -84,20 +84,23 @@ These drive Keywright's expiration **defaults**. Distinguish operational cryptop
 - **RSADP clarification**: the SP 800-56B/56B-r2 RSA Decryption Primitive on cert #5291 belongs to the **PIV** "General AUTH Decrypt" service, **not** OpenPGP decipher (which is ECDH-only). Minor wording tension: the SSP table groups PIV+OpenPGP private-key objects together, but no OpenPGP RSA-decrypt *service* exists in approved mode.
 - **P-224**: CAVP-tested in the module but **not offered by the OpenPGP key-generation service** (P-256/384/521 only) — not a practical OpenPGP option.
 
----
+______________________________________________________________________
 
 ## 5. Policy-engine implications
 
 **"FIPS-only" profile** (must stay in YubiKey OpenPGP FIPS Approved Mode):
+
 - **Permit**: RSA-2048/3072/4096 (sign/auth/certify), ECDSA P-256/384/521, Ed25519, ECDH NIST P-256/384/521 (encryption subkey), SHA-256/384/512.
 - **Permit-with-flag** (works in approved mode but NOT NIST-approved): brainpoolP256r1/384r1/512r1 — only if the deployment accepts IG C.A "allowed" non-NIST curves. Many US federal procurements expect strict NIST curves; default to excluding brainpool under "strict FIPS."
 - **Forbid**: X25519/cv25519, RSA encryption subkeys (RSA decipher), secp256k1, Ed448. Require encryption subkey = ECDH NIST P-curve. Enforce ≥8-char PINs.
 
 **"CNSA 2.0" profile** (NSS) — note **no YubiKey can be truly CNSA 2.0-conformant** (requires ML-KEM-1024 / ML-DSA-87, which no shipping OpenPGP applet implements). Best achievable is **CNSA-transitional classical**:
+
 - **Permit (transitional only)**: RSA-3072/4096, ECDSA/ECDH **P-384**, SHA-384/512. All carry a "retire by 2030/2033" flag.
 - **Forbid**: RSA-2048, **P-256, P-521**, Ed25519, X25519, all brainpool, SHA-256 for general use. Ensure `nistp384` maps to "CNSA-acceptable transitional" and the engine refuses nistp256/nistp521/brainpool/Ed25519/cv25519 when CNSA is the goal.
 
 **"BSI TR-02102-1" profile**:
+
 - **Permit/recommend**: RSA-3072/4096, **brainpoolP256r1/384r1/512r1** (the explicitly named curves), SHA-256/384/512.
 - **Permit-with-condition**: NIST P-256/384/521 (meet q≥2²⁵⁰ but not named in Table B.3 — residual interpretive uncertainty on whether NIST curves count as "from a trustworthy authority").
 - **Not-addressed (cannot claim conformant)**: Ed25519, X25519/cv25519 — absent from Part 1 (neither recommended nor forbidden).
@@ -115,11 +118,12 @@ These drive Keywright's expiration **defaults**. Distinguish operational cryptop
 | **SHA-256** | Fine under FIPS/186-5/800-57/BSI but **below the CNSA general-use hash floor**. |
 | **RSA-2048** | FIPS/186-5-approved but **CNSA-forbidden, BSI-deprecated, and SP 800-57-disallowed for new protection from 2031**. "FIPS-approved" alone overstates its standing. |
 
----
+______________________________________________________________________
 
 ## 6. Caveats & freshness (re-check before publishing compliance claims)
 
 **Time-sensitive / must re-verify:**
+
 - **Module-validation lag is the core trap**: "approved in the standard" ≠ "available in the validated module." Ed448 is FIPS 186-5-approved but absent from cert #5291; brainpool is BSI-recommended but only IG C.A-Allowed in the module. Always check both layers.
 - **X25519 trajectory**: blocked because SP 800-56A r3 does not list X25519/X448 key agreement (IG C.K Res.5). **Correction from adversarial pass**: the claim that this "could change in a future SP 800-56A revision" is too optimistic — NIST's **2025-07-29** announcement explicitly states it **does not propose to approve** X25519/X448, treating them as secondary to the PQC transition. Current trajectory is **active non-approval**, not pending addition.
 - **CNSA PQC timeline** (re-check as deadlines approach): support/exclusive dates — sw/fw signing & networking **exclusive 2030**; web/cloud & OS **exclusive 2033**; new NSS acquisitions CNSA-2.0 from **Jan 1 2027**; all NSS quantum-resistant **2035** (NSM-10). Additional **CNSSP-15 enforcement overlay** (distinct instrument): fielded non-compliant equipment phased out by **Dec 31 2030**, full enforcement **Dec 31 2031**.
@@ -128,6 +132,7 @@ These drive Keywright's expiration **defaults**. Distinguish operational cryptop
 - **#3907 sunset**: prior FIPS 140-2 cert moving to Historical (~Sept 2026); ensure tooling targets #5291.
 
 **Remaining uncertainty (not fully verified):**
+
 - **BSI NIST-curve status**: TR-02102-1 names only Brainpool in Table B.3. Whether NIST P-curves qualify under Remark B.1's "standardised values from a trustworthy authority" is **not stated explicitly** — this is genuine interpretive ambiguity, hence the ⚠ rather than ★/✗ for P-curves under BSI.
 - **OpenPGP-applet 5.7-specific enumeration**: the FIPS-mode block list and 8-char PIN come from Yubico operational docs (authoritative for vendor approved-mode behavior); the curve set was confirmed against the firmware 5.2.3 OpenPGP-3.4 page, not a 5.7-specific applet enumeration. The approved list is grounded in the CMVP policy. Keep that source division explicit.
 - **CNSA primary PDFs**: media.defense.gov returned HTTP 403 to automated fetchers in both research and verification; the algorithm set, parameters, and timeline were corroborated via the NIST CMVP records plus multiple independent NSA-quoting analyses, **not** a verbatim read of the NSA PDFs. A human should confirm against the official PDFs before publishing.
