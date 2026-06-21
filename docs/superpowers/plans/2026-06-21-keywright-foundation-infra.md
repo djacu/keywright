@@ -35,6 +35,7 @@ overlays/nixos-tests/
   keytocard-ecc/package.nix   # runNixOSTest: ed25519/cv25519 keytocard on the virtual card
   keytocard-rsa/package.nix   # runNixOSTest: RSA-4096 keytocard on the virtual card
 overlays/default.nix     # MODIFY: add a separate `nixosTests` overlay exposing pkgs.keywrightTests
+formatterModule/default.nix # MODIFY: enable rustfmt so `nix fmt` formats Rust
 hydra-jobs/vm-tests.nix  # NEW: mapTestOn over pkgs.keywrightTests (tests overlay via extraOverlays)
 .github/workflows/ci.yml # NEW: install nix -> assert KVM -> verify-hydra-jobset vm-tests
 ```
@@ -50,6 +51,7 @@ hydra-jobs/vm-tests.nix  # NEW: mapTestOn over pkgs.keywrightTests (tests overla
 - Create: `overlays/top-level/keywright/crates/keywright-cli/Cargo.toml`
 - Create: `overlays/top-level/keywright/crates/keywright-cli/src/main.rs`
 - Create: `overlays/top-level/keywright/Cargo.lock` (generated)
+- Modify: `formatterModule/default.nix` (enable `rustfmt` so `nix fmt` formats Rust)
 
 **Interfaces:**
 - Produces: a Cargo workspace with a binary `keywright` (from `keywright-cli`) and a library crate `keywright-core` exposing `pub fn version() -> &'static str`. Task 2 packages this; Plans 2–3 add real modules/commands.
@@ -76,7 +78,16 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: Create the crate + workspace manifests and the CLI**
+- [ ] **Step 2: Enable `rustfmt` in treefmt, then create the manifests and CLI**
+
+First enable Rust formatting so the `nix fmt` in Step 4 also formats the `.rs` files. In `formatterModule/default.nix`, add these alongside the other `programs.*` lines inside the `evalModule` block (treefmt-nix passes `--edition`, so set it to match the crates):
+
+```nix
+    programs.rustfmt.enable = true;
+    programs.rustfmt.edition = "2021";
+```
+
+Then create the workspace files.
 
 `overlays/top-level/keywright/Cargo.toml`:
 ```toml
@@ -141,9 +152,9 @@ Expected: `Cargo.lock` created; `test version_is_nonempty ... ok`; `keywright --
 
 ```bash
 cd /home/djacu/dev/djacu/yubikey-loader
-nix fmt
-git add overlays/top-level/keywright/Cargo.toml overlays/top-level/keywright/Cargo.lock overlays/top-level/keywright/crates
-git commit -m "feat(keywright): rust workspace skeleton (core lib + cli)"
+nix fmt   # now also formats the .rs files (rustfmt enabled in Step 2)
+git add formatterModule/default.nix overlays/top-level/keywright/Cargo.toml overlays/top-level/keywright/Cargo.lock overlays/top-level/keywright/crates
+git commit -m "feat(keywright): rust workspace skeleton + enable treefmt rustfmt"
 ```
 Expected: signed commit succeeds (enter PIN at the pinentry).
 
@@ -781,6 +792,7 @@ Expected: the `vm-tests` job is green, having built `keytocard-ecc` and `keytoca
 
 **1. Spec coverage (against the §2.2/§14 scope of this plan):**
 - Rust workspace + `keywright` package → Tasks 1–2. ✓
+- Rust formatting wired into `nix fmt` (treefmt `rustfmt`, edition 2021) → Task 1 Step 2. ✓
 - `opcard-rs` package (features `vpicc,rsa4096-gen`) → Task 3. ✓
 - `overlays.nixosTests` (separate, not in `default`; `extraOverlays` injection) → Tasks 4, 7. ✓
 - Migrated keytocard tests, ECC **and** RSA-4096, with rationale comments → Tasks 5–6. ✓
