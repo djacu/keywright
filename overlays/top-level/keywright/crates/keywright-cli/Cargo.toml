@@ -1,0 +1,12 @@
+[package]
+name = "keywright-cli"
+version = "0.0.1"
+edition = "2024"
+
+[[bin]]
+name = "keywright"
+path = "src/main.rs"
+
+[dependencies]
+keywright-core = { path = "../keywright-core" }
+clap = { version = "4", features = ["derive"] }
