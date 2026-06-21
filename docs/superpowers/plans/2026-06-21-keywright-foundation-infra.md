@@ -80,12 +80,13 @@ mod tests {
 
 - [ ] **Step 2: Enable `rustfmt` in treefmt, then create the manifests and CLI**
 
-First enable Rust formatting so the `nix fmt` in Step 4 also formats the `.rs` files. In `formatterModule/default.nix`, add these alongside the other `programs.*` lines inside the `evalModule` block (treefmt-nix passes `--edition`, so set it to match the crates):
+First enable Rust formatting so the `nix fmt` in Step 4 also formats the `.rs` files. In `formatterModule/default.nix`, add this alongside the other `programs.*` lines inside the `evalModule` block:
 
 ```nix
     programs.rustfmt.enable = true;
-    programs.rustfmt.edition = "2021";
 ```
+
+(No `edition` line needed — treefmt-nix's `rustfmt` already defaults `--edition` to `2024`, which matches the crates below. Only set `programs.rustfmt.edition` if the crates ever target a different edition.)
 
 Then create the workspace files.
 
@@ -101,7 +102,7 @@ members = ["crates/keywright-core", "crates/keywright-cli"]
 [package]
 name = "keywright-core"
 version = "0.0.1"
-edition = "2021"
+edition = "2024"
 ```
 
 `overlays/top-level/keywright/crates/keywright-cli/Cargo.toml`:
@@ -109,7 +110,7 @@ edition = "2021"
 [package]
 name = "keywright-cli"
 version = "0.0.1"
-edition = "2021"
+edition = "2024"
 
 [[bin]]
 name = "keywright"
@@ -792,7 +793,7 @@ Expected: the `vm-tests` job is green, having built `keytocard-ecc` and `keytoca
 
 **1. Spec coverage (against the §2.2/§14 scope of this plan):**
 - Rust workspace + `keywright` package → Tasks 1–2. ✓
-- Rust formatting wired into `nix fmt` (treefmt `rustfmt`, edition 2021) → Task 1 Step 2. ✓
+- Rust formatting wired into `nix fmt` (treefmt `rustfmt`; edition 2024 — its default, matching the crates) → Task 1 Step 2. ✓
 - `opcard-rs` package (features `vpicc,rsa4096-gen`) → Task 3. ✓
 - `overlays.nixosTests` (separate, not in `default`; `extraOverlays` injection) → Tasks 4, 7. ✓
 - Migrated keytocard tests, ECC **and** RSA-4096, with rationale comments → Tasks 5–6. ✓
