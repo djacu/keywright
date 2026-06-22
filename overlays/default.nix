@@ -16,6 +16,10 @@ let
     composeManyExtensions
     ;
 
+  inherit (lib.attrsets)
+    recurseIntoAttrs
+    ;
+
   inherit (lib.lists)
     filter
     ;
@@ -38,6 +42,15 @@ let
       inherit (prev) newScope;
       directory = ./top-level;
     };
+
+  # VM tests, kept OUT of `default` so they don't load nixos/lib into the
+  # packages jobset. Injected into hydra-jobs/vm-tests.nix via extraOverlays.
+  nixosTests = final: _prev: {
+    keywrightTests = recurseIntoAttrs (packagesFromDirectoryRecursive {
+      inherit (final) callPackage;
+      directory = ./nixos-tests;
+    });
+  };
 
   python-packages = _final: prev: {
     pythonPackagesExtensions = prev.pythonPackagesExtensions ++ [
@@ -72,6 +85,7 @@ in
   inherit
     default
     fixes
+    nixosTests
     python-packages
     top-level
     ;

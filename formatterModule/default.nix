@@ -27,6 +27,8 @@ mapAttrs (const (
 
     programs.nixfmt.enable = true;
 
+    programs.rustfmt.enable = true;
+
     programs.statix.enable = true;
 
   })

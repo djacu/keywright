@@ -4,12 +4,13 @@
 **Scope:** The first sub-project of Keywright — the cross-cutting *foundation contracts* proven by one end-to-end *vertical slice* of YubiKey/OpenPGP provisioning, CI-tested against a virtual smartcard.
 
 Related artifacts in this repo:
+
 - `docs/design/open-questions.md` — the adversarial gap-check (B1–B13, S1–S12, M1–M3) this spec resolves.
 - `docs/design/compliance.md` — the sourced + verified FIPS/CNSA/BSI/NIST compliance matrix.
 - Feasibility was proven by a throwaway spike (`opcard-rs` virtual card + `keytocard` in a NixOS VM test, ECC **and** RSA-4096); its packaging + test migrate into this spec (see §14).
 - §18 records the disposition of the adversarial spec-review findings.
 
----
+______________________________________________________________________
 
 ## 1. What Keywright is, and what this spec delivers
 
@@ -25,7 +26,7 @@ The entire slice is **CI-tested in a NixOS VM against a virtual OpenPGP card** (
 
 Renew / rotate / revoke lifecycle ops; key **escrow**; same-identity **multi-card duplication**; the **TUI**; compliance/attestation **reporting**; the **`mkHost`** host-builder refactor + the `nixos-configs` build matrix; the **ISO build** itself (incl. measured/Secure-Boot image integrity); **batch renew** + **batch export**; YubiKey-as-LUKS-unlock; and **all real-hardware validation** (ykman ops, touch policy, FIPS-mode device behaviour, multi-reader scdaemon). Bounded in §16–§18.
 
----
+______________________________________________________________________
 
 ## 2. Architecture & repository layout
 
@@ -72,7 +73,7 @@ write + SIGN terminal audit record (BEFORE any reset) → export public bundle
 - **`factory-reset` is never part of the success path of an already-provisioned card** (review S14). It is used only for (a) pre-provisioning hygiene of a fresh/dirty card and (b) **failure-recovery**, which *may* reset a card with partial `keytocard` state — gated on a verified backup (§13).
 - **Deterministic cleanup via RAII (`Drop`):** guard values run cleanup on *every* exit path. **Two distinct `EphemeralGnupgHome` guards** — the provisioning home and the §7 verification scratch home — plus `LuksMount` and `SessionSecretFile` guards; all tmpfs-resident, each wiping on `Drop`. Hard-kill is backstopped by the ephemeral reboot.
 
----
+______________________________________________________________________
 
 ## 3. The decision registry (config ↔ prompt ↔ CLI ↔ audit parity)
 
@@ -83,7 +84,7 @@ Every user decision is **declared once** as a registry entry: `{ id, type, optio
 - **Mandatory plan preview (S11-orig):** before any irreversible action, the tool prints every resolved decision + provenance and requires confirmation (interactive) or logs-and-proceeds (non-interactive). `--dry-run` resolves + prints the plan and exits `0` touching nothing.
 - The concrete Rust shape (value-type enum; algorithm-profile as one-or-per-role entries; `policy-hook` signature + invocation point; id→key→flag derivation; structured-value audit serialization) is pinned in the implementation plan (review S4).
 
----
+______________________________________________________________________
 
 ## 4. Configuration format & sources
 
@@ -91,19 +92,19 @@ Every user decision is **declared once** as a registry entry: `{ id, type, optio
 - **Sources are mutually exclusive (NixOS module assertion):** `keywright.config` (Nix attrset → TOML via `pkgs.formats.toml`) **XOR** `keywright.configFile` (path to operator TOML).
 - **Non-interactive trigger (B11-orig):** non-interactive iff `--batch <file>`/`--non-interactive` or stdin not a TTY; unmet required decision is a hard error. Destructive actions require an explicit token; the interactive "type the card serial" gate has a non-interactive analog (`target_card_serial` must match the discovered serial or hard-error) (review S5).
 
----
+______________________________________________________________________
 
 ## 5. Secret-handling contract
 
 1. Secrets flow via **file descriptors/stdin** — never argv/env; never logged; never in shell history.
-2. `GNUPGHOME` and all working state live on **tmpfs**; `TMPDIR` and child-process scratch are forced under the tmpfs root; **active swap is a hard precondition failure** (`shred` is unreliable on SSD); `RLIMIT_CORE=0`.
-3. **Certify-secret invariant (review S2):** after `keytocard` (which only stubs the *subkeys*), the **primary certify secret remains fully present** in tmpfs. It exists *only* in: **(a)** the transient provisioning tmpfs `GNUPGHOME`; **(b)** the LUKS backups via `--export-secret-keys`; and **(c)** the transient §7 verification scratch tmpfs `GNUPGHOME` (its own `Drop` guard, wiped immediately after verify — not only at teardown). **Never** on any non-tmpfs, non-LUKS path. The VM test asserts no plaintext secret outside tmpfs/LUKS at any point, that the scratch home is wiped post-verify, and that nothing remains after teardown.
-4. **No secrets are ever persisted into the ISO image.** `sops-nix`-via-the-ISO-host-key is unsound for a distributable image. Corporate secret custody is the **escrow** sub-project (deferred).
-5. **Three independent secrets (S3-orig):** the GPG certify passphrase, the LUKS passphrase, and the YubiKey PINs are **distinct**.
-6. **Session passphrase cache — security-relevant, not a UX nicety (review S2):** the round-trip verify (§7) *requires* the certify passphrase to be available to the scratch agent, so the cache is load-bearing for the safety gate. It is a **transient tmpfs file** (`$XDG_RUNTIME_DIR/keywright/…`, `0600`), session-scoped, **`Drop`-shredded at session end**, never persisted/logged (provenance `session-file`). Granularity: key material (`GNUPGHOME`) is wiped **per identity**; the cache persists for the batch. The per-secret non-interactive source for unattended batch (which secret the cache carries; operator-supplied vs tool-generated certify/PIN/LUKS) is pinned in the plan (review S13).
-7. **Entropy preflight (S4-orig):** before any generation, require kernel CSPRNG readiness (`getrandom`/"crng init done"); **fail closed** otherwise. (HWRNG preference disposition — advisory-log vs policy-lockable-hard-fail — decided in the plan; crng-init is authoritative, review N1.)
+1. `GNUPGHOME` and all working state live on **tmpfs**; `TMPDIR` and child-process scratch are forced under the tmpfs root; **active swap is a hard precondition failure** (`shred` is unreliable on SSD); `RLIMIT_CORE=0`.
+1. **Certify-secret invariant (review S2):** after `keytocard` (which only stubs the *subkeys*), the **primary certify secret remains fully present** in tmpfs. It exists *only* in: **(a)** the transient provisioning tmpfs `GNUPGHOME`; **(b)** the LUKS backups via `--export-secret-keys`; and **(c)** the transient §7 verification scratch tmpfs `GNUPGHOME` (its own `Drop` guard, wiped immediately after verify — not only at teardown). **Never** on any non-tmpfs, non-LUKS path. The VM test asserts no plaintext secret outside tmpfs/LUKS at any point, that the scratch home is wiped post-verify, and that nothing remains after teardown.
+1. **No secrets are ever persisted into the ISO image.** `sops-nix`-via-the-ISO-host-key is unsound for a distributable image. Corporate secret custody is the **escrow** sub-project (deferred).
+1. **Three independent secrets (S3-orig):** the GPG certify passphrase, the LUKS passphrase, and the YubiKey PINs are **distinct**.
+1. **Session passphrase cache — security-relevant, not a UX nicety (review S2):** the round-trip verify (§7) *requires* the certify passphrase to be available to the scratch agent, so the cache is load-bearing for the safety gate. It is a **transient tmpfs file** (`$XDG_RUNTIME_DIR/keywright/…`, `0600`), session-scoped, **`Drop`-shredded at session end**, never persisted/logged (provenance `session-file`). Granularity: key material (`GNUPGHOME`) is wiped **per identity**; the cache persists for the batch. The per-secret non-interactive source for unattended batch (which secret the cache carries; operator-supplied vs tool-generated certify/PIN/LUKS) is pinned in the plan (review S13).
+1. **Entropy preflight (S4-orig):** before any generation, require kernel CSPRNG readiness (`getrandom`/"crng init done"); **fail closed** otherwise. (HWRNG preference disposition — advisory-log vs policy-lockable-hard-fail — decided in the plan; crng-init is authoritative, review N1.)
 
----
+______________________________________________________________________
 
 ## 6. Device model & safety
 
@@ -112,10 +113,11 @@ Devices are **lists**; selection is **multi-select**. Three device **roles**: **
 ### 6.1 Safe-target filter — default-deny
 
 Offer a drive **only if** it survives all exclusions:
+
 1. **Not backing the running system** — exclude any whole-disk with a partition mounted at `/`, `/boot`, `/nix` (or `/nix/.ro-store`), `/iso`/the live squashfs source, or active swap (`lsblk` MOUNTPOINTS + `findmnt` + `/proc/swaps`). Covers **both** the live-ISO USB and a future internal OS drive. **This mountpoint rule — not `rm`/`tran` — is what excludes the boot disk** (a qemu boot disk can carry a serial/by-id and look removable; review S3/§14.3).
-2. **Default-deny internal disks** — exclude non-removable/internal (`rm:false` / `tran ∈ {nvme,sata,…}`) unless explicitly allowlisted.
-3. **Identify/confirm/address by stable handles** — `by-id` + serial + model + size; destructive ops address by **by-id**, never `/dev/sdX`.
-4. **Explicit per-device confirmation.**
+1. **Default-deny internal disks** — exclude non-removable/internal (`rm:false` / `tran ∈ {nvme,sata,…}`) unless explicitly allowlisted.
+1. **Identify/confirm/address by stable handles** — `by-id` + serial + model + size; destructive ops address by **by-id**, never `/dev/sdX`.
+1. **Explicit per-device confirmation.**
 
 **Allowlist (review S3):** a decision-registry entry — a list of stable device identifiers — that **can re-include a rule-2 internal disk but can NEVER re-include a rule-1 running-system/boot/swap disk** (absolute). Its key/type/precedence + the idempotency-override token are pinned in the plan.
 
@@ -123,14 +125,14 @@ Offer a drive **only if** it survives all exclusions:
 
 Refuse to `luksFormat` a drive already holding a recognizable Keywright backup, or to re-provision a fingerprint/email already backed up on a selected drive, unless explicitly forced.
 
----
+______________________________________________________________________
 
 ## 7. Backup & verification
 
 - Per identity, write the encrypted backup to **each** selected drive under a **per-fingerprint directory** (§11). Shared org backup media (one LUKS passphrase) hold many identities; format designed to be cleanly archivable for future off-site/cloud export (deferred).
 - **"Verified usable backup" = full round-trip (B4-orig)**, entirely in tmpfs: `luksOpen` on a separate handle → import the secret key(s) into the §5.3(c) scratch tmpfs `GNUPGHOME` → assert the fingerprint matches and a decrypt/sign test succeeds → wipe the scratch home. Only after this passes is `keytocard` permitted, operating on the **same pinned LUKS handle** with the **card serial fixed**. The VM test **injects a truncated/corrupt backup and asserts `keytocard` is blocked**.
 
----
+______________________________________________________________________
 
 ## 8. Audit & operator identity (Option A)
 
@@ -141,16 +143,16 @@ Refuse to `luksFormat` a drive already holding a recognizable Keywright backup, 
 - **Bootstrap/genesis (review S11):** `seq=0, prev_hash=0…0, event_type=genesis`, signed by the ephemeral key whose public half is embedded **and committed into the public export bundle** (a second copy outside the operator's hands); the first real-key entry **counter-signs** the genesis fingerprint. **Out-of-band recording of the genesis root is a mandatory, gated step** for bootstrap runs (the operator must acknowledge having recorded it, logged as a decision with provenance). `allow_bootstrap` is policy-lockable (set `false` once an operator key exists); the tool never silently prefers bootstrap when an operator key is present.
 - **Honest guarantee:** the chain provides **per-run, intra-chain tamper-evidence**; cross-run/fleet reconciliation (a durable corporate ledger) is **deferred** (each run mints its own `chain_id`). A bootstrap chain is *authenticatable* only to the extent its genesis root was recorded out-of-band.
 
----
+______________________________________________________________________
 
 ## 9. Policy & compliance enforcement
 
 - **Policy trust root (B1-orig):** the security-team policy is **baked into the read-only `/nix/store` at ISO build time** (resolved by the NixOS module to a store path). *Policy authenticity == ISO build integrity.* **Named residual risk (review S12):** nothing in this slice verifies the ISO's own integrity at boot, so policy enforcement is sound only against an operator who **cannot supply their own boot medium**; defending a malicious operator who controls the ISO is **out of scope for slice #1** and requires measured/Secure Boot + signed-image verification — owned by the deferred ISO sub-project.
 - **Lockable fields (B2-orig):** compliance profile, algorithm/curve set, key expiration, PIN min-length + generated-vs-chosen, factory-reset-required, audit-required, `allow_bootstrap`, the device allowlist.
-- **Compliance is a fail-closed gate (B2-orig + review S9):** compliance constraints are a **hard floor evaluated after policy resolution**; any policy/config/CLI value violating the active profile makes the tool **refuse to start with a named error, before any key generation**. The slice enforces the **full FIPS forbid-list** as the floor: **cv25519/X25519, RSA-encryption subkey, secp256k1, Ed448, <8-char PIN** are all rejected under FIPS (cv25519-under-FIPS is the single most likely operator mistake, since cv25519 is the *non-FIPS default* — §10). §15 asserts at least the cv25519-under-FIPS, RSA-encryption-under-FIPS, and sub-8-char-PIN-under-FIPS conditions fail closed.
+- **Compliance is a fail-closed gate (B2-orig + review S9):** compliance constraints are a **hard floor evaluated after policy resolution**; any policy/config/CLI value violating the active profile makes the tool **refuse to start with a named error, before any key generation**. The slice enforces the **full FIPS forbid-list** as the floor: **cv25519/X25519, RSA-encryption subkey, secp256k1, Ed448, \<8-char PIN** are all rejected under FIPS (cv25519-under-FIPS is the single most likely operator mistake, since cv25519 is the *non-FIPS default* — §10). §15 asserts at least the cv25519-under-FIPS, RSA-encryption-under-FIPS, and sub-8-char-PIN-under-FIPS conditions fail closed.
 - **Compliance profiles** (verified — `docs/design/compliance.md`): **FIPS** (YubiKey 5 FIPS, CMVP #5291); **CNSA 2.0** (transitional classical: RSA-3072/4096, P-384 only, SHA-384/512); **BSI TR-02102-1** (Brainpool); **drduh**.
 
----
+______________________________________________________________________
 
 ## 10. Key parameters (algorithms, PINs, KDF, attributes, expiry, revocation)
 
@@ -164,27 +166,27 @@ Refuse to `luksFormat` a drive already holding a recognizable Keywright backup, 
 - **Touch policy (S8-orig):** recorded in the registry/audit **now** (default on for sig/dec/aut); **application via `ykman` is deferred/HITL**.
 - **Tool-generated `GNUPGHOME` config (S6-orig):** dirmngr/keyserver/network fully disabled (air-gap), cross-certification required, AES256/SHA512 preferences per policy; **`scdaemon.conf` sets `disable-ccid` AND a store-pinned `pcsc-driver = …/libpcsclite.so`** (GnuPG ≥2.4 removed the automatic PC/SC fallback, review S7). Baked, hash-pinned, not operator-editable.
 
----
+______________________________________________________________________
 
 ## 11. Public export bundle
 
 The **only** artifact not reconstructable from a YubiKey is the **public key `.asc`** (the card lacks the primary public key, UIDs, bindings, expiry, ownertrust). *Verified:* from the `.asc` alone, with no card, the fingerprint, Key ID, all subkey **keygrips** (incl. the `[A]` auth keygrip), and the SSH public key all derive. The bundle (to the export target; **public-derivable data only** — never the revocation cert/PINs/passphrases):
 
 1. **`<keyid>-<date>.asc`** — full public certificate.
-2. **A machine-readable manifest (TOML/JSON)** for declarative configs: primary fingerprint + Key ID, UID(s), per-subkey `{capability, algorithm, fingerprint, keygrip, expiry}` with the **`[A]` keygrip called out** (for `gpg-agent` `sshKeys`/`sshcontrol`), the **SSH public key** (`gpg --export-ssh-key`), creation date, provisioned card serial(s), and the bootstrap genesis public key (§8).
-3. **`ownertrust`** (`gpg --export-ownertrust`) — annotated/commented as **owner-machine-only**, not a blind `import-ownertrust` (trust-amplification footgun, review N2).
-4. *(optional)* `summary.txt`.
+1. **A machine-readable manifest (TOML/JSON)** for declarative configs: primary fingerprint + Key ID, UID(s), per-subkey `{capability, algorithm, fingerprint, keygrip, expiry}` with the **`[A]` keygrip called out** (for `gpg-agent` `sshKeys`/`sshcontrol`), the **SSH public key** (`gpg --export-ssh-key`), creation date, provisioned card serial(s), and the bootstrap genesis public key (§8).
+1. **`ownertrust`** (`gpg --export-ownertrust`) — annotated/commented as **owner-machine-only**, not a blind `import-ownertrust` (trust-amplification footgun, review N2).
+1. *(optional)* `summary.txt`.
 
 Goal: a downstream config reads the manifest to populate `sshKeys = [<auth keygrip>]` + `signingkey = <keyid>` automatically.
 
----
+______________________________________________________________________
 
 ## 12. The gpg ↔ ykman seam
 
 - **gpg-driven path** (CI-testable against the virtual card): key generation, `card-status`, KDF, PIN change, card attributes, `keytocard`, `factory-reset`, revocation cert.
 - **ykman/hardware path** (human-in-the-loop, stubbed in CI behind the seam): touch policy, retry counters, `openpgp reset`, `config usb`, and anything requiring genuine-YubiKey/FIPS-mode behaviour. `ykman` binds only to readers named `"yubico yubikey"`.
 
----
+______________________________________________________________________
 
 ## 13. Failure handling, batch, and multi-user
 
@@ -192,7 +194,7 @@ Goal: a downstream config reads the manifest to populate `sshKeys = [<auth keygr
 - **Card binding (S5-orig):** with N cards inserted, the operator confirms by **reader name + card serial**; that identity is pinned for the whole flow; the post-`keytocard` readback is parsed **per slot** (OPENPGP.1/2/3 = sig/enc/auth, not by line order — review N3) and must come from the same serial.
 - **Multi-user batch** = iterate the single-identity flow with **per-identity `GNUPGHOME` wipe**; session LUKS passphrase + opened drives persist for the batch. Config (`[[identity]]` TOML: name+email only, file order = audit order, duplicate emails rejected) is the automatable corporate path.
 
----
+______________________________________________________________________
 
 ## 14. Test harness & CI
 
@@ -217,21 +219,21 @@ Goal: a downstream config reads the manifest to populate `sshKeys = [<auth keygr
 
 **GitHub Actions is the acceptance gate** (matches the "CI-tested" headline); it invokes `verify-hydra-jobset` against `hydra-jobs/vm-tests.nix` (Hydra-jobs are the job *definitions*, `verify-hydra-jobset` the runner). One workflow on `ubuntu-latest`: `DeterminateSystems/nix-installer-action` + `wimpysworld/nothing-but-nix` + a **Cachix** push/pull. **KVM-unavailable is a visible non-success (review B4):** if `DETERMINATE_NIX_KVM != 1` the VM-test job **fails (or emits a required, merge-blocking "VM tests skipped: no KVM" status)** — "green" must never mean "VM tests didn't run." A guaranteed-KVM path (larger/self-hosted runner) is the fallback if free-runner KVM proves flaky. Matrix/self-hosted otherwise deferred.
 
----
+______________________________________________________________________
 
 ## 15. Acceptance criteria
 
 The slice is "done" when, with GitHub Actions green (VM tests actually executed, per §14.4):
 
 1. Single-identity provision **end-to-end** for **both** the ed25519/cv25519 **and** the FIPS RSA-4096 profile (incl. **RSA-4096 certify**): discover → select (1 card; boot disk excluded by mountpoint rule; ≥2 serial-disks) → keygen → backup-to-all-drives → **round-trip-verify** → KDF/PINs/attributes (before keytocard) → `keytocard` (changed Admin PIN) → per-slot readback → signed JCS-canonical hash-chained audit record (before any reset) → public bundle exported.
-2. **Safety guards proven (fail-closed):** boot disk **never offered**; `keytocard` **blocked** on a corrupt backup; **cv25519-under-FIPS**, **RSA-encryption-under-FIPS**, and **sub-8-char-PIN-under-FIPS** configs each **fail closed before keygen**; **`kdf-setup` after a key is present is rejected**; **entropy preflight** fails closed when crng is not ready; **idempotency guard** refuses to reformat an existing Keywright backup.
-3. **Certify-secret disposal asserted:** no plaintext certify/secret material outside tmpfs/LUKS at any point; the §7 scratch home is wiped post-verify; nothing remains after teardown; the session cache is shredded at session end.
-4. **2-identity batch** (provision A → reset → provision B on one virtual card) with **`GNUPGHOME` isolation** asserted and **both** backups present; runs to completion with **no interactive secret entry**.
-5. **Audit verifies:** signatures + `prev_hash` links check; a JCS round-trip with a non-ASCII UID verifies; the genesis root is emitted and the bootstrap pubkey appears in the export bundle; a **signed, correctly-chained `aborted` record** is produced on an injected post-`keytocard` failure. The **revocation cert** is a parseable packet in the backup and **absent** from the public export.
-6. **Config/registry:** `--dry-run` prints the full resolved plan + provenance and exits `0` touching nothing; the non-interactive plan-log path CI uses is exercised; advertised `GNUPGHOME` cipher/digest preferences match policy; the card-binding readback comes from the pinned serial.
-7. **Unit tests** for the core (decision registry, device-safety filter, audit JCS canonicalization, parsers) pass; `nix flake check` (formatting) passes.
+1. **Safety guards proven (fail-closed):** boot disk **never offered**; `keytocard` **blocked** on a corrupt backup; **cv25519-under-FIPS**, **RSA-encryption-under-FIPS**, and **sub-8-char-PIN-under-FIPS** configs each **fail closed before keygen**; **`kdf-setup` after a key is present is rejected**; **entropy preflight** fails closed when crng is not ready; **idempotency guard** refuses to reformat an existing Keywright backup.
+1. **Certify-secret disposal asserted:** no plaintext certify/secret material outside tmpfs/LUKS at any point; the §7 scratch home is wiped post-verify; nothing remains after teardown; the session cache is shredded at session end.
+1. **2-identity batch** (provision A → reset → provision B on one virtual card) with **`GNUPGHOME` isolation** asserted and **both** backups present; runs to completion with **no interactive secret entry**.
+1. **Audit verifies:** signatures + `prev_hash` links check; a JCS round-trip with a non-ASCII UID verifies; the genesis root is emitted and the bootstrap pubkey appears in the export bundle; a **signed, correctly-chained `aborted` record** is produced on an injected post-`keytocard` failure. The **revocation cert** is a parseable packet in the backup and **absent** from the public export.
+1. **Config/registry:** `--dry-run` prints the full resolved plan + provenance and exits `0` touching nothing; the non-interactive plan-log path CI uses is exercised; advertised `GNUPGHOME` cipher/digest preferences match policy; the card-binding readback comes from the pinned serial.
+1. **Unit tests** for the core (decision registry, device-safety filter, audit JCS canonicalization, parsers) pass; `nix flake check` (formatting) passes.
 
----
+______________________________________________________________________
 
 ## 16. Open verification items (tracked, non-blocking)
 
@@ -239,13 +241,13 @@ The slice is "done" when, with GitHub Actions green (VM tests actually executed,
 - **Hardware (pending a YubiKey 5 FIPS — not currently available):** FIPS-mode device behaviour, all `ykman` ops, touch policy, multi-reader `scdaemon` disambiguation, real `rm`/`tran=usb` detection, RSA-on-real-card, and the **B1 card-config ordering on real hardware** (opcard-rs may not enforce the fresh-card precondition). A documented human-in-the-loop checklist (hardware spec).
 - **Freshness:** NIST SP 800-57 Rev.6 / SP 800-131A Rev.3 are drafts (bind to Rev.5 / r2); CNSA deadlines; CMVP #3907 → Historical (~Sept 2026); cite CNSA v2.1 (`PP-24-4014`).
 
----
+______________________________________________________________________
 
 ## 17. Deferred sub-projects (roadmap)
 
 Lifecycle (**renew** — extend expiry from the offline master; **rotate** — new subkeys, same master, the non-FIPS→FIPS migration; **revoke**), where `renew`/`rotate` take **selection filters** over the per-fingerprint backups — `--expiring-within <duration>`, fingerprint/email list, algorithm/non-compliant, or all — with a secret-free `--dry-run` "who's due" report (expiry is public metadata); an expiry-window filter on a quarterly cadence self-aligns renewals to quarter boundaries and spreads public-key redistribution to ~1/6 of the fleet per run; **escrow** (custody of certify/LUKS passphrases + Admin PINs via a pinned versioned `secrets.txt` schema — review N6; off-site/cloud **encrypted-archive** export; **batch renew/export**); same-identity **multi-card duplication**; the **TUI**; compliance/attestation **reporting**; the **air-gapped ISO build** (incl. measured/Secure-Boot image integrity — the owner of §9's residual risk); the **`mkHost`** refactor + `nixos-configs` matrix; **YubiKey-as-LUKS-unlock**.
 
----
+______________________________________________________________________
 
 ## 18. Adversarial spec-review disposition
 

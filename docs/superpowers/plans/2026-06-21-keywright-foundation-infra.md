@@ -17,7 +17,7 @@
 - This plan touches **no secrets and no real hardware** — the card is the `opcard-rs` virtual card; `ykman`-path ops are out of scope (the seam).
 - The reusable, *proven* source for the migration is the throwaway spike at `/home/djacu/dev/djacu/yk-spike-keystone` (its `flake.nix` holds the working `opcard-vpicc` package + both test scripts; `opcard-src/Cargo.lock` is the generated lock). Copy from it; do not re-derive.
 
----
+______________________________________________________________________
 
 ## File Structure
 
@@ -40,11 +40,12 @@ hydra-jobs/vm-tests.nix  # NEW: mapTestOn over pkgs.keywrightTests (tests overla
 .github/workflows/ci.yml # NEW: install nix -> assert KVM -> verify-hydra-jobset vm-tests
 ```
 
----
+______________________________________________________________________
 
 ### Task 1: Rust workspace skeleton (`keywright-core` + `keywright-cli`)
 
 **Files:**
+
 - Create: `overlays/top-level/keywright/Cargo.toml`
 - Create: `overlays/top-level/keywright/crates/keywright-core/Cargo.toml`
 - Create: `overlays/top-level/keywright/crates/keywright-core/src/lib.rs`
@@ -54,11 +55,13 @@ hydra-jobs/vm-tests.nix  # NEW: mapTestOn over pkgs.keywrightTests (tests overla
 - Modify: `formatterModule/default.nix` (enable `rustfmt` so `nix fmt` formats Rust)
 
 **Interfaces:**
+
 - Produces: a Cargo workspace with a binary `keywright` (from `keywright-cli`) and a library crate `keywright-core` exposing `pub fn version() -> &'static str`. Task 2 packages this; Plans 2–3 add real modules/commands.
 
 - [ ] **Step 1: Write the failing core test**
 
 `overlays/top-level/keywright/crates/keywright-core/src/lib.rs`:
+
 ```rust
 //! Keywright core engine (UI-agnostic). Real modules land in Plan 2.
 
@@ -91,6 +94,7 @@ First enable Rust formatting so the `nix fmt` in Step 4 also formats the `.rs` f
 Then create the workspace files.
 
 `overlays/top-level/keywright/Cargo.toml`:
+
 ```toml
 [workspace]
 resolver = "2"
@@ -98,6 +102,7 @@ members = ["crates/keywright-core", "crates/keywright-cli"]
 ```
 
 `overlays/top-level/keywright/crates/keywright-core/Cargo.toml`:
+
 ```toml
 [package]
 name = "keywright-core"
@@ -106,6 +111,7 @@ edition = "2024"
 ```
 
 `overlays/top-level/keywright/crates/keywright-cli/Cargo.toml`:
+
 ```toml
 [package]
 name = "keywright-cli"
@@ -122,6 +128,7 @@ clap = { version = "4", features = ["derive"] }
 ```
 
 `overlays/top-level/keywright/crates/keywright-cli/src/main.rs`:
+
 ```rust
 use clap::Parser;
 
@@ -142,11 +149,13 @@ fn main() {
 - [ ] **Step 3: Generate the lockfile and run the test (expect PASS)**
 
 Run (from the workspace dir):
+
 ```bash
 cd overlays/top-level/keywright
 nix run nixpkgs#cargo -- generate-lockfile
 nix run nixpkgs#cargo -- test
 ```
+
 Expected: `Cargo.lock` created; `test version_is_nonempty ... ok`; `keywright --version` later prints `keywright 0.0.1`.
 
 - [ ] **Step 4: Format and commit**
@@ -157,22 +166,27 @@ nix fmt   # now also formats the .rs files (rustfmt enabled in Step 2)
 git add formatterModule/default.nix overlays/top-level/keywright/Cargo.toml overlays/top-level/keywright/Cargo.lock overlays/top-level/keywright/crates
 git commit -m "feat(keywright): rust workspace skeleton + enable treefmt rustfmt"
 ```
+
 Expected: signed commit succeeds (enter PIN at the pinentry).
 
----
+______________________________________________________________________
 
 ### Task 2: Package `keywright` via `buildRustPackage`
 
 **Files:**
+
 - Create: `overlays/top-level/keywright/package.nix`
 
 **Interfaces:**
+
 - Consumes: the workspace from Task 1.
+
 - Produces: `pkgs.keywright` (auto-discovered by `overlays/top-level` → in `overlays.default` → in `legacyPackages`), `meta.mainProgram = "keywright"`.
 
 - [ ] **Step 1: Write `package.nix` (fileset src, committed lock)**
 
 `overlays/top-level/keywright/package.nix`:
+
 ```nix
 {
   lib,
@@ -204,10 +218,12 @@ rustPlatform.buildRustPackage {
 - [ ] **Step 2: Build it and verify the binary**
 
 Run:
+
 ```bash
 nix build .#keywright -L
 ./result/bin/keywright --version
 ```
+
 Expected: build exits 0; `keywright 0.0.1`.
 
 - [ ] **Step 3: Format and commit**
@@ -218,30 +234,35 @@ git add overlays/top-level/keywright/package.nix
 git commit -m "feat(keywright): package the workspace with buildRustPackage"
 ```
 
----
+______________________________________________________________________
 
 ### Task 3: Package `opcard-rs` (virtual OpenPGP card)
 
 **Files:**
+
 - Create: `overlays/top-level/opcard-rs/package.nix`
 - Create: `overlays/top-level/opcard-rs/Cargo.lock` (copied from the spike)
 
 **Interfaces:**
+
 - Produces: `pkgs.opcard-rs` — a derivation whose `$out/bin/vpicc` is the opcard-rs `vpicc` example (RSA-4096-capable). `meta.mainProgram = "vpicc"`. Tasks 5–6 reference it as the `opcard-rs` arg.
 
 - [ ] **Step 1: Copy the proven generated lockfile**
 
 Run:
+
 ```bash
 mkdir -p overlays/top-level/opcard-rs
 cp /home/djacu/dev/djacu/yk-spike-keystone/opcard-src/Cargo.lock overlays/top-level/opcard-rs/Cargo.lock
 test -s overlays/top-level/opcard-rs/Cargo.lock && echo OK
 ```
+
 Expected: `OK`. (Fallback if the spike is gone: `nix run nixpkgs#cargo -- generate-lockfile` inside a fresh checkout of `github:Nitrokey/opcard-rs` at v1.7.0, then copy its `Cargo.lock`.)
 
 - [ ] **Step 2: Write `package.nix` (fetchFromGitHub + the 7 git-dep outputHashes)**
 
 `overlays/top-level/opcard-rs/package.nix`:
+
 ```nix
 {
   lib,
@@ -315,17 +336,21 @@ rustPlatform.buildRustPackage {
 - [ ] **Step 3: Fill the source hash**
 
 Run:
+
 ```bash
 sed -i 's/hash = "";/hash = lib.fakeHash;/' overlays/top-level/opcard-rs/package.nix
 nix build .#opcard-rs -L 2>&1 | tee /tmp/opcard-build.log || true
 # copy the "got: sha256-…" value from the error into the hash field:
 grep -E 'got:' /tmp/opcard-build.log
 ```
+
 Then set `hash = "sha256-…";` to the reported value and rebuild:
+
 ```bash
 nix build .#opcard-rs -L
 ./result/bin/vpicc --help 2>&1 | head -1 || ls -l result/bin/vpicc
 ```
+
 Expected: build exits 0; `result/bin/vpicc` exists. (If `rev = "v1.7.0"` errors as an unknown ref, set `rev` to the spike's commit: `git -C /home/djacu/dev/djacu/yk-spike-keystone/opcard-rs rev-parse HEAD`, then refill the hash.)
 
 - [ ] **Step 4: Format and commit**
@@ -336,15 +361,18 @@ git add overlays/top-level/opcard-rs/package.nix overlays/top-level/opcard-rs/Ca
 git commit -m "feat(opcard-rs): package the vpicc virtual OpenPGP card (test dep)"
 ```
 
----
+______________________________________________________________________
 
 ### Task 4: Add the `nixosTests` overlay (exposing `pkgs.keywrightTests`)
 
 **Files:**
+
 - Modify: `overlays/default.nix`
 
 **Interfaces:**
+
 - Consumes: `pkgs.opcard-rs` (Task 3); test packages discovered from `overlays/nixos-tests/` (Tasks 5–6).
+
 - Produces: `inputs.self.overlays.nixosTests` — a **separate** overlay (NOT in `overlays.default`) that adds `pkgs.keywrightTests.<name>` for each directory under `overlays/nixos-tests/`. Task 7 injects it via `extraOverlays`.
 
 - [ ] **Step 1: Add the overlay and export it**
@@ -352,6 +380,7 @@ git commit -m "feat(opcard-rs): package the vpicc virtual OpenPGP card (test dep
 In `overlays/default.nix`, add `recurseIntoAttrs` to the `lib.attrsets` inherit, define the overlay, and export it (do **not** add it to `default`). Apply this diff:
 
 Add to the inherits near the top:
+
 ```nix
   inherit (lib.attrsets)
     recurseIntoAttrs
@@ -359,6 +388,7 @@ Add to the inherits near the top:
 ```
 
 Add the overlay definition alongside `top-level` (after the `top-level` binding):
+
 ```nix
   # VM tests, kept OUT of `default` so they don't load nixos/lib into the
   # packages jobset. Injected into hydra-jobs/vm-tests.nix via extraOverlays.
@@ -372,6 +402,7 @@ Add the overlay definition alongside `top-level` (after the `top-level` binding)
 ```
 
 Add `nixosTests` to the returned set (the final `in { inherit … }` block):
+
 ```nix
   inherit
     default
@@ -385,19 +416,23 @@ Add `nixosTests` to the returned set (the final `in { inherit … }` block):
 - [ ] **Step 2: Create the directory so discovery has something to read**
 
 Run:
+
 ```bash
 mkdir -p overlays/nixos-tests
 ```
+
 (Tasks 5–6 add the test packages; the empty dir keeps `packagesFromDirectoryRecursive` happy.)
 
 - [ ] **Step 3: Verify packages resolve (no build)**
 
 Run:
+
 ```bash
 nix eval .#legacyPackages.x86_64-linux.keywright.name --raw && echo
 nix eval .#legacyPackages.x86_64-linux.opcard-rs.name --raw && echo
 nix eval --impure --expr 'let p = (builtins.getFlake (toString ./.)).overlays.nixosTests; in builtins.isFunction p'
 ```
+
 Expected: `keywright-0.0.1`, `opcard-rs-1.7.0`, `true`.
 
 - [ ] **Step 4: Format and commit**
@@ -408,20 +443,24 @@ git add overlays/default.nix
 git commit -m "feat(overlays): add nixosTests overlay exposing pkgs.keywrightTests"
 ```
 
----
+______________________________________________________________________
 
 ### Task 5: Migrate the ECC keytocard VM test
 
 **Files:**
+
 - Create: `overlays/nixos-tests/keytocard-ecc/package.nix`
 
 **Interfaces:**
+
 - Consumes: `testers`, `opcard-rs` (Task 3) via `callPackage`.
+
 - Produces: `pkgs.keywrightTests.keytocard-ecc` — a `runNixOSTest` derivation.
 
 - [ ] **Step 1: Write the test package (rationale comments tie each assertion to a requirement)**
 
 `overlays/nixos-tests/keytocard-ecc/package.nix`:
+
 ```nix
 {
   testers,
@@ -510,10 +549,12 @@ testers.runNixOSTest {
 - [ ] **Step 2: Build the test (requires local KVM)**
 
 Run:
+
 ```bash
 nix build --impure --expr 'let s = builtins.getFlake (toString ./.); p = import s.inputs.nixpkgs { system = "x86_64-linux"; overlays = [ s.overlays.default s.overlays.nixosTests ]; }; in p.keywrightTests.keytocard-ecc' -L --no-link
 echo "EXIT=$?"
 ```
+
 Expected: build exits 0; log ends with `ECC keytocard PASS`.
 
 - [ ] **Step 3: Format and commit**
@@ -524,20 +565,24 @@ git add overlays/nixos-tests/keytocard-ecc/package.nix
 git commit -m "test(keywright): migrate ECC keytocard VM test from the keystone spike"
 ```
 
----
+______________________________________________________________________
 
 ### Task 6: Migrate the RSA-4096 keytocard VM test
 
 **Files:**
+
 - Create: `overlays/nixos-tests/keytocard-rsa/package.nix`
 
 **Interfaces:**
+
 - Consumes: `testers`, `opcard-rs`.
+
 - Produces: `pkgs.keywrightTests.keytocard-rsa`.
 
 - [ ] **Step 1: Write the RSA test package**
 
 `overlays/nixos-tests/keytocard-rsa/package.nix`:
+
 ```nix
 {
   testers,
@@ -625,10 +670,12 @@ testers.runNixOSTest {
 - [ ] **Step 2: Build the test (KVM)**
 
 Run:
+
 ```bash
 nix build --impure --expr 'let s = builtins.getFlake (toString ./.); p = import s.inputs.nixpkgs { system = "x86_64-linux"; overlays = [ s.overlays.default s.overlays.nixosTests ]; }; in p.keywrightTests.keytocard-rsa' -L --no-link
 echo "EXIT=$?"
 ```
+
 Expected: build exits 0; log ends with `RSA-4096 keytocard PASS`.
 
 - [ ] **Step 3: Format and commit**
@@ -639,20 +686,24 @@ git add overlays/nixos-tests/keytocard-rsa/package.nix
 git commit -m "test(keywright): migrate RSA-4096 keytocard VM test from the keystone spike"
 ```
 
----
+______________________________________________________________________
 
 ### Task 7: `hydra-jobs/vm-tests.nix` (per-system VM-test jobset)
 
 **Files:**
+
 - Create: `hydra-jobs/vm-tests.nix`
 
 **Interfaces:**
+
 - Consumes: `hydra-jobs/common.nix` (existing; provides `releaseLib`/`mapTestOn`/`packagePlatforms`/`pkgs`); `self.overlays.nixosTests`; `self.library.paths.getDirectoryNames`.
+
 - Produces: a jobset attrset `keywrightTests.<name>.<system>` that `verify-hydra-jobset` evaluates + builds.
 
 - [ ] **Step 1: Write the jobset**
 
 `hydra-jobs/vm-tests.nix` (mirrors `packages.nix`, but injects the tests overlay via `extraOverlays`):
+
 ```nix
 {
   supportedSystems ? [
@@ -703,10 +754,12 @@ mapTestOn (
 - [ ] **Step 2: Run the jobset through `verify-hydra-jobset` (KVM)**
 
 Run:
+
 ```bash
 nix run .#verify-hydra-jobset -- ./hydra-jobs/vm-tests.nix --max-memory-size 6144
 echo "EXIT=$?"
 ```
+
 Expected: evaluates `keywrightTests.keytocard-ecc.x86_64-linux` and `keywrightTests.keytocard-rsa.x86_64-linux`, builds both (each ends in its PASS line), exits 0.
 
 - [ ] **Step 3: Format and commit**
@@ -717,20 +770,24 @@ git add hydra-jobs/vm-tests.nix
 git commit -m "feat(hydra-jobs): vm-tests jobset (mapTestOn over keywrightTests)"
 ```
 
----
+______________________________________________________________________
 
 ### Task 8: GitHub Actions CI
 
 **Files:**
+
 - Create: `.github/workflows/ci.yml`
 
 **Interfaces:**
+
 - Consumes: `hydra-jobs/vm-tests.nix`; a Cachix cache + `CACHIX_AUTH_TOKEN` secret (maintainer-provided — see Step 3).
+
 - Produces: a CI workflow that fails visibly if KVM is unavailable and otherwise runs the VM-test jobset.
 
 - [ ] **Step 1: Write the workflow**
 
 `.github/workflows/ci.yml`:
+
 ```yaml
 name: ci
 
@@ -781,17 +838,20 @@ git commit -m "ci: run vm-tests jobset on GitHub Actions (fail-visible on no KVM
 - [ ] **Step 3: Maintainer sets up Cachix, then push to trigger CI**
 
 Maintainer actions (out-of-band, one-time): create a public Cachix cache named `keywright`, generate an auth token, add it as the `CACHIX_AUTH_TOKEN` repo secret, and publish the cache's public key in the README/flake. Then:
+
 ```bash
 git push
 gh run watch "$(gh run list --workflow=ci.yml --branch main --limit 1 --json databaseId -q '.[0].databaseId')" --exit-status
 ```
+
 Expected: the `vm-tests` job is green, having built `keytocard-ecc` and `keytocard-rsa` (both PASS) on the runner.
 
----
+______________________________________________________________________
 
 ## Self-Review
 
 **1. Spec coverage (against the §2.2/§14 scope of this plan):**
+
 - Rust workspace + `keywright` package → Tasks 1–2. ✓
 - Rust formatting wired into `nix fmt` (treefmt `rustfmt`; edition 2024 — its default, matching the crates) → Task 1 Step 2. ✓
 - `opcard-rs` package (features `vpicc,rsa4096-gen`) → Task 3. ✓
@@ -805,13 +865,13 @@ Expected: the `vm-tests` job is green, having built `keytocard-ecc` and `keytoca
 
 **3. Type/name consistency:** `pkgs.keywright` (Task 2) · `pkgs.opcard-rs` with bin `vpicc` (Task 3, consumed as the `opcard-rs` arg in Tasks 5–6) · `pkgs.keywrightTests.{keytocard-ecc,keytocard-rsa}` (Tasks 4–7) · `self.overlays.nixosTests` (Tasks 4, 7) · the test scripts use `${opcard-rs}/bin/vpicc` matching Task 3's install path. Consistent.
 
----
+______________________________________________________________________
 
 ## Execution Handoff
 
 Plan complete and saved to `docs/superpowers/plans/2026-06-21-keywright-foundation-infra.md`. Two execution options:
 
 1. **Subagent-Driven (recommended)** — I dispatch a fresh subagent per task, review between tasks, fast iteration.
-2. **Inline Execution** — execute tasks in this session using executing-plans, batch execution with checkpoints.
+1. **Inline Execution** — execute tasks in this session using executing-plans, batch execution with checkpoints.
 
 Which approach?
