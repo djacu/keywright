@@ -1,6 +1,6 @@
 # Keywright Core Engine — Decision & Safety Layer (Plan 2) Design
 
-**Status:** Draft for review (rev 5 — folds in four rounds of adversarial review + the deployment decision)
+**Status:** Draft for review (rev 7 — hardens clock-trust to fail-closed build-floor + plumbs the validated `now` via `PlanResult`; adds compliance-data freshness; folds in four rounds of adversarial review + the deployment decision)
 **Date:** 2026-06-22
 **Builds on:** `docs/superpowers/specs/2026-06-20-keywright-foundation-design.md` (the foundation design; this spec references its locked decisions rather than repeating them).
 **Resolves:** the implementation-plan document for foundation §18 open items **S3, S4, S5, N1** (resolutions in §§3–7) and the L0–L3 portions of S13.
@@ -85,8 +85,19 @@ pub enum ResolvedValue { Bool(bool), Enum(&'static str), Uint(u64), Expiry(Expir
 pub struct Resolved { pub value: ResolvedValue, pub provenance: Provenance }
 pub struct ResolvedSet(BTreeMap<&'static str, Resolved>);   // keyed by Decision id
 
+// The resolution entry point returns the resolved decisions PLUS the two
+// non-Decision context values the engine must carry so nothing downstream
+// re-reads a raw clock or data file: the validated wall-clock (§7) and the
+// baked compliance-data edition (§5). compliance::validate + the plan preview
+// consume these as inputs — never SystemTime::now() or an unchecked clock.
+pub struct PlanResult {
+    pub resolved: ResolvedSet,
+    pub validated_now: OffsetDateTime,    // §7 clock step (confirmed | asserted), absolute UTC
+    pub compliance_data_version: String,  // baked compliance-data edition (§5)
+}
+
 pub fn resolve(cli: &CliArgs, config: &Config, policy: &Policy, interactive: bool)
-    -> Result<ResolvedSet, Error>;
+    -> Result<PlanResult, Error>;
 ```
 
 Precedence per decision: **policy-locked > CLI > config > default > (interactive prompt | non-interactive hard error)**. A policy-locked field rejects any lower-precedence override with a named error. Per-value range/format validation happens during resolution; **a resolution-time validation error carries the decision `id` + a non-secret reason (e.g. "pin too short: len < 8") and never embeds the secret value.** **All cross-field constraints over resolved decisions live in `compliance::validate` (§5)** (full `ResolvedSet`); there is no per-decision `policy_hook`. (Aggregate constraints over *discovered devices* — e.g. ≥2 backup drives — are not decisions and live in `device::check_roles`, §6.)
@@ -119,6 +130,7 @@ CLI for `AlgoProfile`: per-role flags `--algo-<role> <algo>[:<expiry>]`.
 | `device-allowlist` | DeviceList | `[]` | yes | y | y | n | n |
 | `on-failure` | Enum[abort-leave-clean,factory-reset-and-abort] | `abort-leave-clean` | yes | y | y | n | n |
 | `target-card-serial` | Str | `None` | no | y | y | n | n |
+| `asserted-date` | Str (RFC-3339) | `None` | no | y | y | n | n |
 | `real-name` | Str | `None` | no | y | y | n | n |
 | `email` | Str | `None` | no | y | y | n | n |
 | `user-pin` / `admin-pin` / `certify-passphrase` | Pin | `None` | no | **n** | **n** | **y** | **y** |
@@ -144,7 +156,7 @@ pub enum Profile { Drduh, Fips, Cnsa, Bsi }
 pub enum Regime  { Fips1403, Fips1865, Sp80057, Cnsa2, BsiTr02102 }
 pub enum VerdictStatus { Recommended, Approved, AllowedWithConditions, Forbidden, NotAddressed }
 pub struct Verdict { pub regime: Regime, pub status: VerdictStatus, pub note: &'static str }
-pub fn validate(resolved: &ResolvedSet) -> Result<(), ComplianceError>;
+pub fn validate(resolved: &ResolvedSet, now: OffsetDateTime) -> Result<(), ComplianceError>; // takes the validated UTC `now`; reads no clock itself
 ```
 
 - **Global minimum-RSA floor (every profile, incl. drduh):** reject any `Algo::Rsa(n)` with **`n < 2048`**, named error. RSA-1024 (~80-bit) is never acceptable.
@@ -157,6 +169,8 @@ pub fn validate(resolved: &ResolvedSet) -> Result<(), ComplianceError>;
 - **`bsi` profile:** NIST curves → `AllowedWithConditions` (permit-with-condition / unverified); **cv25519 under `bsi` → `NotAddressed`** (no hard reject, matching compliance.md); Brainpool BSI-recommended; **RSA `< 3000` rejected**. Expiry horizons split per compliance.md §3: an **encryption** subkey expiring after **end-2031** is hard-rejected; a **signing/auth** subkey after **end-2035** is hard-rejected.
 - **strict-FIPS:** excludes Brainpool by default (policy flag).
 - **Per-role profiles + expiry (foundation §10):** non-FIPS default ed25519 C+S+A / cv25519 E; FIPS RSA-4096 C+S/A / NIST P-curve ECDH E. Certify never expires; subkeys default 2-year, policy-configurable incl. never.
+- **Absolute compliance horizons are versioned, refreshable data — never frozen Rust constants:** the dated values in this section (BSI end-2031 / end-2035, CNSA end-2030 / end-2033, the SP 800-57 algorithm-sunset years, the firmware 5.7.4 / CMVP #5291 references) are time-sensitive published values the standards bodies revise. They live in **compliance-data tables baked into the ISO's read-only `/nix/store` at build time** (same trust model as the policy, §4) and are stamped with a **`compliance-data-version`** (the editions/dates transcribed, e.g. `BSI TR-02102-1:2024-01; SP 800-57 r5; CNSA 2.0 v2.1`) — **not** hard-coded in Rust source. A rebuild refreshes them; the `compliance-data-version` is carried in **`PlanResult`** and the plan preview, and recorded in every audit record (the audit chain itself is Plan 3), so the edition that gated a provisioning is auditable. Staleness is made **visible** (the version string in preview/audit, plus an optional baked `compliance-data-not-after` advisory date that surfaces a preview warning) but is **not** guaranteed to fail in the safe direction: if a standard later *tightens* (shorter horizon, higher floor, new forbid), a stale ISO would *under*-refuse — the unsafe direction — which an air-gapped box cannot detect. The obligation is therefore to **rebuild when a standard republishes** (§14).
+- **The expiry-ceiling comparison takes a validated clock as a parameter:** these horizons are absolute calendar dates, so the check (`key-expiry-date ≤ horizon`) depends on a trustworthy "now". `compliance::validate(&resolved, now)` receives the **`validated_now`** (from `PlanResult`, produced by the §7 clock step) and **reads no clock itself** — never `SystemTime::now()` or an unchecked system clock. A §10 test asserts `compliance` has no access to the system clock.
 
 **Acceptance (added to §15):** under `fips`, a cv25519 encryption subkey is refused before keygen with a regime-qualified error; under `drduh`, the same cv25519 is permitted; **RSA < 2048 refused under every profile; RSA < 3072 refused under `cnsa`; RSA < 3000 refused under `bsi`.**
 
@@ -210,7 +224,10 @@ pub fn idempotency_check(drive: &DiskCandidate, fpr_or_email: &str, force: bool)
 ```rust
 pub fn preflight() -> Result<(), Error>; // active-swap → hard error; RLIMIT_CORE=0; crng-init (getrandom) ready
                                          // or fail-closed; tmpfs working dir present; mlock advisory (ENOMEM non-fatal);
-                                         // HWRNG absence → advisory log (crng-init is the hard gate)
+                                         // HWRNG absence → advisory log (crng-init is the hard gate);
+                                         // clock floor: HARD-ERROR if baked build-floor absent/unparseable/<= 2024-01-01
+                                         //   (never skipped); else require now >= floor;
+                                         // upper bound: interactive-confirm | asserted-date, else fail-closed (see Clock trust)
 pub struct EphemeralGnupgHome;           // tmpfs GNUPGHOME; Drop wipes the dir on every path incl. panic
 pub struct SessionSecretFile;            // $XDG_RUNTIME_DIR/keywright, 0600; Drop-unlinks at session end
 pub struct SecretString;                 // zeroize-on-drop in-memory secret; redacting Debug
@@ -220,6 +237,7 @@ pub struct SecretString;                 // zeroize-on-drop in-memory secret; re
 - **tmpfs residency:** GNUPGHOME + all working state + `TMPDIR` + child scratch on tmpfs; active swap a hard precondition failure; `RLIMIT_CORE=0`; **`mlock` attempted as advisory** (ENOMEM logged, not fatal — tmpfs + no-swap are the primary controls); no secrets in the ISO.
 - **In-memory zeroing:** PIN/passphrase values use `SecretString`. **`SessionSecretFile` Drop-*unlinks*** (tmpfs — RAM-backed, pages zeroed on reclaim — so byte-overwrite adds nothing and a fallible `shred` in `Drop` is avoided).
 - **Entropy preflight:** require crng-init (`getrandom`) before any future secret/key generation; fail closed. **HWRNG (N1):** advisory-log default; crng-init is the hard gate.
+- **Clock trust:** the §5 expiry-ceiling comparison and gpg's key creation/expiry stamping both depend on the system wall-clock, which on an air-gapped box (no NTP, possibly a dead RTC) may be wrong. `preflight` enforces a **lower bound, fail-closed**. The floor is an **explicitly-injected build date baked into the ISO at build time** (authoritative); the flake's `lastModified` MAY cross-check it but is **never** used with an epoch fallback — `self.lastModified or 19700101` (which silently yields the 1970 epoch on a `path:`/dirty/no-git tree and would turn `now >= floor` into a tautology) is **forbidden; fail the build instead**, and `preflight` **hard-errors (never skips)** if the baked floor is absent, unparseable, or `<=` a fixed sanity epoch (`2024-01-01`). Only with a valid floor does it require `now >= floor` (a correct clock cannot predate the source the ISO was built from). The **upper bound cannot be auto-checked**, so the validated `now` is **operator-confirmed**: interactive mode shows the detected date/time and requires confirmation (provenance `Interactive`); non-interactive/batch mode requires `asserted-date` (registry — parsed to an **absolute UTC instant**, rejecting naive/ambiguous forms, and `>=` the floor, provenance `Cli`/`Config`) or it is a hard error. `asserted-date` is intentionally **non-lockable** (the provisioning date is unknowable at build time; its only bound is `>= floor`). The resulting **`validated_now`** rides in `PlanResult`, is what §5 compares against, and is recorded in the audit with provenance (Plan 3). Pre-key-material (Plan 2). Residual (§14): a clock the operator deliberately sets *forward* and also confirms/asserts is accepted.
 - **`SessionSecretFile` contract (S13 schema — Plan 2 owns the contract; Plan 3 owns generation/injection):** may hold, per identity/batch, the **certify-key passphrase**, the **YubiKey PINs**, and (batch-scoped) the **LUKS passphrase** persisting across identities. Each is `pin-source = generated|chosen` (registry): `generated` ⇒ tool-makes-it; `chosen` ⇒ operator-supplied via fd/stdin (a fd referenced in the `--batch` payload, never argv/env). `Provenance::SessionFile` marks a cache-served value. **The LUKS-passphrase slot is defined here for Plan 3 to populate** — Plan 2 does not populate it and its tests do not exercise it (a `None` field is valid in Plan 2), but the struct must accommodate it so **Plan 3 extends this schema rather than inventing a parallel cache.** Generation + per-batch injection are Plan 3.
 - **Deferred to Plan 3:** `LuksMount`, the verification-scratch `EphemeralGnupgHome`, the bootstrap-ephemeral-key guard, and any key/PIN/LUKS-passphrase *generation*.
 
@@ -248,12 +266,13 @@ All Plan 2 tests are **unit tests requiring no hardware, no card, and no real bl
 - **secret:** `preflight` (swap-active → error; crng; mlock advisory), `EphemeralGnupgHome`/`SessionSecretFile` `Drop` removes the path (assert gone after drop) **incl. a `catch_unwind` panic-path test**, `SecretString` zeroizes.
 - **dry-run:** `--dry-run` and **`--dry-run --batch <chosen-secret-fd>`** each create **no** file under `$XDG_RUNTIME_DIR`; a chosen PIN renders **redacted**.
 - **tokens:** satisfying `confirm-format` does **not** unlock `confirm-keytocard` or `force`.
+- **clock + compliance-data:** `preflight` hard-fails when the baked floor is **absent / unparseable / `<= 2024-01-01`** (not merely when `now < floor`) and when `now < floor`; a non-interactive run hard-fails when `asserted-date` is **absent**, `< floor`, or not RFC-3339; `asserted-date` is normalized to an absolute UTC instant before the compare; **`compliance::validate` takes `now` as a parameter and a test asserts it has no access to the system clock**; the §5 ceiling consumes that `validated_now`; the `validated_now` + `compliance-data-version` ride in `PlanResult` and appear in the dry-run/plan preview with provenance (audit recording is Plan 3).
 
 **Not in Plan 2 tests:** VM/opcard integration, card ops, LUKS, audit signing, end-to-end slice (Plans 3–4). The gpg `--with-colons` parsers are Plan 3.
 
 ## 11. Crate / Dependency Policy
 
-Standard, well-known crates, **vendored + hash-pinned** via the existing `buildRustPackage` `cargoLock` (same as `opcard-rs`); `Cargo.lock` regenerated + committed; air-gapped build needs no network. Plan 2 set: `serde`, `toml`, `thiserror`, `clap` (present), **`getrandom`**, **`libc` or `nix`** (`setrlimit`, `mlock`), **`zeroize`**. Largely already transitive under `clap`/`serde`. **No** `sequoia`/`rpgp`/`pcsc` (gpg-subprocess decision). The §6 source-resolution shells out to **read-only** probes (`zpool status`, `lsblk`, `findmnt`, `mdadm --detail`/sysfs, bcache sysfs) via `runner` — no new key/storage crate.
+Standard, well-known crates, **vendored + hash-pinned** via the existing `buildRustPackage` `cargoLock` (same as `opcard-rs`); `Cargo.lock` regenerated + committed; air-gapped build needs no network. Plan 2 set: `serde`, `toml`, `thiserror`, `clap` (present), **`getrandom`**, **`libc` or `nix`** (`setrlimit`, `mlock`), **`zeroize`**, **`time`** (UTC `OffsetDateTime` + RFC-3339 parsing for the clock-trust `validated_now`/`asserted-date`). Largely already transitive under `clap`/`serde`. **No** `sequoia`/`rpgp`/`pcsc` (gpg-subprocess decision). The §6 source-resolution shells out to **read-only** probes (`zpool status`, `lsblk`, `findmnt`, `mdadm --detail`/sysfs, bcache sysfs) via `runner` — no new key/storage crate.
 
 ## 12. Resolved Decisions & Deferrals
 
@@ -262,13 +281,14 @@ This spec is the implementation-plan document for foundation §18 items **S3, S4
 | Decision | Resolution |
 |---|---|
 | Card-driving | gpg subprocess + scdaemon (PC/SC) |
-| Registry shape (**S4**) | data-driven `static &[Decision]` with per-surface controls; `ResolvedValue`/`DefaultVal`/`Algo`/`Expiry` enums; `AlgoProfile` = one entry, `[algo]` nested TOML; **no `policy_hook`** — cross-field over decisions in `compliance::validate(&ResolvedSet)` (no profile arg), aggregate over devices in `device::check_roles`; `compliance_tags` per-option in `compliance` |
+| Registry shape (**S4**) | data-driven `static &[Decision]` with per-surface controls; `ResolvedValue`/`DefaultVal`/`Algo`/`Expiry` enums; `AlgoProfile` = one entry, `[algo]` nested TOML; **no `policy_hook`** — cross-field over decisions in `compliance::validate(&ResolvedSet, now)` (no profile arg; takes the validated clock), aggregate over devices in `device::check_roles`; `compliance_tags` per-option in `compliance` |
 | Plan 2 scope | L0–L3 only; gpg `--with-colons` parsers → Plan 3 |
 | `drduh` profile | standalone, non-regulatory; cv25519 permitted; still subject to the global min-RSA floor |
 | Compliance floors/lists | **global min-RSA `<2048` reject (all profiles)**; FIPS-mode block-list scoped; Ed448 in fips forbid-list only; **CNSA RSA `<3072`**; **BSI RSA `<3000`**, split 2031(enc)/2035(sign), cv25519 `NotAddressed`; CNSA 2033 ceiling gated by `cnsa-use-case`; strict-FIPS excludes Brainpool |
 | Device safety (**S3**) | **positive-proof, fail-closed**: a disk is a valid target only if discovery proves no in-use mount/swap resolves to it AND resolution was complete; any unresolved in-use source → global exclude-all. Total recursive source-resolution across dm/LVM/btrfs/loop/ZFS/mdraid/bcache/zvol/**swapfile**/**overlay**. allowlist = policy-lockable by-id list; `force`/`confirm-*` = distinct CLI-only tokens; rule-1 below the registry, by-id-independent; by-id uniqueness in `classify`; ≥2 BackupLuks in `device::check_roles`. **Designed safe on general-purpose hosts, not just the appliance.** |
 | `on-failure` values (**S5**) | `abort-leave-clean` (default — renamed from the foundation's illustrative `abort`), `factory-reset-and-abort`; retry interactive-only; behavior in Plan 3 |
 | HWRNG (**N1**) | advisory-log; crng-init hard gate; `mlock` advisory |
+| Compliance-data freshness + clock trust | absolute horizons (BSI/CNSA dates, SP 800-57 sunsets, firmware/cert refs) are **versioned refreshable data baked in `/nix/store`** + a `compliance-data-version` (staleness made *visible*, **not** guaranteed safe-direction — standards can tighten), never frozen constants; **clock-trust preflight** — **authoritative injected build-floor** (no epoch fallback; preflight HARD-ERRORS if absent/unparseable/`<= 2024-01-01`), then `now >= floor`; upper bound operator-confirmed or `asserted-date` (absolute UTC, `>= floor`, non-lockable); the **`validated_now` + `compliance-data-version` ride in `PlanResult`**, passed to `compliance::validate(&resolved, now)` (reads no clock) |
 | Secret safety | type-level fd/stdin transport; `SecretString` zeroize + redacting Debug; no secret in any Error/log; dry-run never materializes a secret; `panic=abort` forbidden |
 | Crate policy | serde/toml/thiserror/clap/getrandom/libc(or nix)/zeroize, vendored |
 | Version / edition | stays `0.0.1`; edition 2024 (confirmed by the committed `Cargo.toml`) |
@@ -286,5 +306,6 @@ No secret key material, no key generation, no card operations, no LUKS format/mo
 - Discovery is a **best-effort read-only snapshot** assembled from several probes (`findmnt`/`mountinfo`, `/proc/swaps`, `zpool status`, `lsblk`, by-id symlinks) and is **not atomic**. The fail-closed bias makes a mid-scan change that adds an unresolvable source safe (`resolution_complete=false` → exclude-all), and the load-bearing discover→use race is closed by the immediate pre-destructive re-validation of `by_id`+serial+size (Plan 3). No atomicity is assumed.
 - §6 source-resolution is **fail-closed against non-resolution by construction** but relies on each per-stack resolver being **conservative against mis-resolution** (a resolver unsure it found all backing disks marks the source incomplete rather than returning a partial set). That conservatism is an implementation-correctness obligation guarded by the §6/§10 fixture matrix (incl. the degraded-member and whole-disk roll-up fixtures); a new storage stack must ship its resolver + fixtures together.
 - `mlock` is advisory (ENOMEM non-fatal); tmpfs + no-swap are the primary anti-swap controls.
-- The compliance forbid-lists/horizons (§5) are transcribed from `compliance.md`; any list load-bearing for a specific deployment should be re-confirmed against the primary sources during implementation.
+- The compliance forbid-lists/horizons (§5) are transcribed from `compliance.md` and are **time-sensitive**: they are carried as versioned, refreshable compliance-data baked into the ISO (stamped `compliance-data-version`, with an optional `compliance-data-not-after` advisory date), not frozen constants, so a rebuild refreshes them. Staleness is made **visible** (the version string + advisory date surface in preview/audit) but is **not** guaranteed to fail in the safe direction: if a standard later *relaxes*, a stale ISO over-refuses (safe); if it *tightens* (shorter horizon, higher floor, new forbid), a stale ISO *under*-refuses (the unsafe direction) — and an air-gapped box cannot tell which. The obligation is therefore to **rebuild when a standard republishes**; any horizon load-bearing for a deployment should be re-confirmed against the primary source before relying on it.
+- **Clock trust on air-gapped hosts:** the baked build-floor catches a *backwards* clock automatically (fail-closed); the *upper* bound relies on operator confirmation (interactive) or `asserted-date` (non-interactive). A clock deliberately set **forward** and confirmed/asserted by the operator is accepted — defending against a colluding operator who controls both the box and the asserted date is out of scope (named, not mitigated; consistent with the "operator who controls the ISO" residual above). A wrong clock also mis-stamps gpg key creation/expiry (Plan 3); the same validated `now` is the mitigation.
 - The `runner` secret-type + gpg-parser contracts are designed in Plan 2 around the gpg-subprocess decision but exercised against gpg only in Plan 3; a mismatch surfaced there is a Plan 3 finding.
