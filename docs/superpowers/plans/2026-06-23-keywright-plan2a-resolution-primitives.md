@@ -800,25 +800,42 @@ pub fn resolve(cli: &CliArgs, config: &Config, policy: &Policy, interactive: boo
             continue;
         }
 
-        let (raw, prov): (Option<RawVal>, Provenance) = if policy.is_locked(d.id) {
-            (Some(RawVal::Toml(policy.locked(d.id).unwrap().clone())), Provenance::PolicyLocked)
-        } else if d.cli && cli.values.contains_key(d.id) {
-            (Some(RawVal::Str(cli.values[d.id].clone())), Provenance::Cli)
-        } else if d.config && config.values.contains_key(d.id) {
-            (Some(RawVal::Toml(config.values[d.id].clone())), Provenance::Config)
-        } else {
-            (None, Provenance::Default)
-        };
+        // Policy-locked: the lock wins, but a CONFLICTING lower-precedence override
+        // (CLI/config supplies a DIFFERENT value) is a named error (§3); a redundant
+        // same-value override is accepted.
+        if let Some(locked) = policy.locked(d.id) {
+            let locked_val = coerce(d, RawVal::Toml(locked.clone()))?;
+            if d.cli {
+                if let Some(s) = cli.values.get(d.id) {
+                    if !values_equal(&locked_val, &coerce(d, RawVal::Str(s.clone()))?) {
+                        return Err(Error::Resolve { id: d.id, reason: "policy-locked; CLI value conflicts".into() });
+                    }
+                }
+            }
+            if d.config {
+                if let Some(v) = config.values.get(d.id) {
+                    if !values_equal(&locked_val, &coerce(d, RawVal::Toml(v.clone()))?) {
+                        return Err(Error::Resolve { id: d.id, reason: "policy-locked; config value conflicts".into() });
+                    }
+                }
+            }
+            out.0.insert(d.id, Resolved { value: locked_val, provenance: Provenance::PolicyLocked });
+            continue;
+        }
 
-        let resolved = match raw {
-            Some(rv) => Resolved { value: coerce(d, rv)?, provenance: prov },
-            None => match default_value(d) {
+        // Not locked: CLI > config > default > (required hard error | leave unresolved).
+        let resolved = if d.cli && cli.values.contains_key(d.id) {
+            Resolved { value: coerce(d, RawVal::Str(cli.values[d.id].clone()))?, provenance: Provenance::Cli }
+        } else if d.config && config.values.contains_key(d.id) {
+            Resolved { value: coerce(d, RawVal::Toml(config.values[d.id].clone()))?, provenance: Provenance::Config }
+        } else {
+            match default_value(d) {
                 Some(v) => Resolved { value: v, provenance: Provenance::Default },
                 // No default supplied:
                 None if d.required && !interactive =>
                     return Err(Error::Resolve { id: d.id, reason: "required, not supplied (non-interactive)".into() }),
                 None => continue, // optional, or interactive (prompt wired in Plan 3/4) → leave unresolved
-            },
+            }
         };
         out.0.insert(d.id, resolved);
     }
@@ -830,7 +847,22 @@ pub fn resolve(cli: &CliArgs, config: &Config, policy: &Policy, interactive: boo
 fn resolve_algo(d: &Decision, cli: &CliArgs, config: &Config, policy: &Policy) -> Result<Resolved> {
     let err = |reason: String| Error::Resolve { id: d.id, reason };
     if let Some(v) = policy.locked(d.id) {
-        return Ok(Resolved { value: ResolvedValue::AlgoProfile(parse_algo_profile(&RawVal::Toml(v.clone())).map_err(err)?), provenance: Provenance::PolicyLocked });
+        let parse = |raw: &RawVal| parse_algo_profile(raw).map_err(|e| Error::Resolve { id: d.id, reason: e });
+        let locked = parse(&RawVal::Toml(v.clone()))?;
+        // a CONFLICTING config [algo] table or per-role CLI override is a named error.
+        if let Some(cv) = config.values.get(d.id) {
+            if parse(&RawVal::Toml(cv.clone()))? != locked {
+                return Err(Error::Resolve { id: d.id, reason: "policy-locked; config algo conflicts".into() });
+            }
+        }
+        if !cli.algo.is_empty() {
+            let mut merged = locked.clone();
+            for (r, s) in &cli.algo { merged.insert(*r, *s); }
+            if merged != locked {
+                return Err(Error::Resolve { id: d.id, reason: "policy-locked; CLI algo conflicts".into() });
+            }
+        }
+        return Ok(Resolved { value: ResolvedValue::AlgoProfile(locked), provenance: Provenance::PolicyLocked });
     }
     // base = config [algo] table, else default profile
     let (mut profile, base_prov) = if let Some(v) = config.values.get(d.id) {
@@ -846,6 +878,23 @@ fn resolve_algo(d: &Decision, cli: &CliArgs, config: &Config, policy: &Policy) -
 }
 
 enum RawVal { Str(String), Toml(toml::Value) }
+
+/// Value equality for the policy-lock conflict check (non-secret variants only;
+/// lockable fields are never `Pin`). A locked field whose lower-precedence value
+/// differs is a named error in `resolve`.
+fn values_equal(a: &ResolvedValue, b: &ResolvedValue) -> bool {
+    use ResolvedValue::*;
+    match (a, b) {
+        (Bool(x), Bool(y)) => x == y,
+        (Enum(x), Enum(y)) => x == y,
+        (Uint(x), Uint(y)) => x == y,
+        (Expiry(x), Expiry(y)) => x == y,
+        (AlgoProfile(x), AlgoProfile(y)) => x == y,
+        (DeviceList(x), DeviceList(y)) => x == y,
+        (Str(x), Str(y)) => x == y,
+        _ => false, // Pin (unreachable for lockable) or mismatched variants
+    }
+}
 
 fn coerce(d: &Decision, raw: RawVal) -> Result<ResolvedValue> {
     let err = |reason: String| Error::Resolve { id: d.id, reason };
@@ -965,22 +1014,49 @@ mod resolve_tests {
         assert!(matches!(set.get("device-allowlist").unwrap().value, ResolvedValue::DeviceList(ref v) if v.is_empty()));
     }
 
-    #[test]
-    fn precedence_policy_beats_cli_beats_config_beats_default() {
-        // WHY (§3): policy-locked > CLI > config > default.
-        let dir = std::env::temp_dir().join(format!("kwtest-prec-{}", std::process::id()));
+    fn locked_profile_policy(tag: &str) -> (Policy, std::path::PathBuf) {
+        // a policy that locks compliance-profile = fips, under a temp store root.
+        let dir = std::env::temp_dir().join(format!("kwtest-{tag}-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let f = dir.join("p.toml"); std::fs::write(&f, "compliance-profile='fips'\n").unwrap();
-        let pol = load_policy_under(&f, &dir).unwrap();
-        let cfg = parse_config("real-name='A'\nemail='a@x.com'\ncompliance-profile='cnsa'\n").unwrap();
-        let mut cli = CliArgs::default(); cli.values.insert("compliance-profile".into(), "bsi".into());
-        let set = resolve(&cli, &cfg, &pol, false).unwrap();
+        (load_policy_under(&f, &dir).unwrap(), dir)
+    }
+
+    #[test]
+    fn policy_lock_wins_and_redundant_same_value_is_accepted() {
+        // WHY (§3): a policy lock wins; a config setting the SAME value is a
+        // redundant (non-conflicting) override → accepted, provenance PolicyLocked.
+        let (pol, dir) = locked_profile_policy("lock-ok");
+        let cfg = parse_config("real-name='A'\nemail='a@x.com'\ncompliance-profile='fips'\n").unwrap();
+        let set = resolve(&empty_cli(), &cfg, &pol, false).unwrap();
         assert!(matches!(set.get("compliance-profile").unwrap().value, ResolvedValue::Enum("fips")));
         assert_eq!(set.get("compliance-profile").unwrap().provenance, Provenance::PolicyLocked);
-        // unlock → CLI wins over config:
-        let set2 = resolve(&cli, &cfg, &Policy::default(), false).unwrap();
-        assert_eq!(set2.get("compliance-profile").unwrap().provenance, Provenance::Cli);
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn policy_locked_conflicting_override_is_named_error() {
+        // WHY (§3): a lower-precedence source supplying a DIFFERENT value than the
+        // lock is a named error (fail-loud), not a silent substitution — for config
+        // AND for CLI.
+        let (pol, dir) = locked_profile_policy("lock-conf");
+        let cfg_conf = parse_config("real-name='A'\nemail='a@x.com'\ncompliance-profile='cnsa'\n").unwrap();
+        let e = resolve(&empty_cli(), &cfg_conf, &pol, false).unwrap_err();
+        assert!(e.to_string().contains("compliance-profile") && e.to_string().contains("policy-locked"));
+        let mut cli = CliArgs::default(); cli.values.insert("compliance-profile".into(), "bsi".into());
+        let cfg = parse_config("real-name='A'\nemail='a@x.com'\n").unwrap();
+        assert!(resolve(&cli, &cfg, &pol, false).is_err(), "conflicting CLI override of a locked field must error");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn cli_beats_config_when_unlocked() {
+        // WHY (§3): with no policy lock, CLI > config > default.
+        let cfg = parse_config("real-name='A'\nemail='a@x.com'\ncompliance-profile='cnsa'\n").unwrap();
+        let mut cli = CliArgs::default(); cli.values.insert("compliance-profile".into(), "bsi".into());
+        let set = resolve(&cli, &cfg, &Policy::default(), false).unwrap();
+        assert!(matches!(set.get("compliance-profile").unwrap().value, ResolvedValue::Enum("bsi")));
+        assert_eq!(set.get("compliance-profile").unwrap().provenance, Provenance::Cli);
     }
 
     #[test]
