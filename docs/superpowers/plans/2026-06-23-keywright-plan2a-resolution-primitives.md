@@ -24,7 +24,7 @@
 - **Formatting:** run `nix fmt` before each commit (treefmt rustfmt). **Commits are GPG-signed** with the maintainer's YubiKey (`commit.gpgsign=true`); a pinentry prompt is expected — never `--no-gpg-sign`.
 - Work from `/home/djacu/dev/djacu/yubikey-loader` on the execution branch; the crate is `overlays/top-level/keywright/crates/keywright-core/`; the workspace root `Cargo.toml` is `overlays/top-level/keywright/Cargo.toml`; the build recipe is `overlays/top-level/keywright/package.nix`.
 
----
+______________________________________________________________________
 
 ## File Structure
 
@@ -50,22 +50,25 @@ overlays/top-level/keywright/
 
 Module dependency order (drives task order): `error` → `registry`(types) → `config`/`policy` → `registry`(resolve) → `runner` → `parse`.
 
----
+______________________________________________________________________
 
 ### Task 1: `error` module + panic-discipline guard
 
 **Files:**
+
 - Modify: `overlays/top-level/keywright/Cargo.toml` (workspace — add `[profile.*] panic="unwind"`)
 - Modify: `crates/keywright-core/Cargo.toml` (add `thiserror`)
 - Create: `crates/keywright-core/src/error.rs`
 - Modify: `crates/keywright-core/src/lib.rs`
 
 **Interfaces:**
+
 - Produces: `pub enum Error` (variants grow per module) + `pub type Result<T> = core::result::Result<T, Error>;`. **Variant rule:** no variant embeds a secret value — carry a decision `id` + a non-secret reason string.
 
 - [ ] **Step 1: Add the panic profiles + the compile-time guard**
 
 Append to `overlays/top-level/keywright/Cargo.toml` (the **workspace root** — `[profile.*]` is ignored in non-root members):
+
 ```toml
 # Spec §9: RAII Drop guards (secret zeroize, tmpfs unlink) MUST run on every
 # unwind path. panic="abort" would skip them and silently void the secret
@@ -81,6 +84,7 @@ panic = "unwind"
 ```
 
 `crates/keywright-core/src/lib.rs` (replace the stub body, keep `version()`):
+
 ```rust
 //! Keywright core engine (UI-agnostic). Plan 2a: resolution + primitives.
 
@@ -109,17 +113,20 @@ mod tests {
     }
 }
 ```
+
 (Add `pub mod registry; pub mod config; pub mod policy; pub mod runner; pub mod parse;` as each later task lands — declare only modules that exist so the crate compiles after every task.)
 
 - [ ] **Step 2: Add `thiserror` and write `error.rs`**
 
 In `crates/keywright-core/Cargo.toml`:
+
 ```toml
 [dependencies]
 thiserror = "2"
 ```
 
 `crates/keywright-core/src/error.rs`:
+
 ```rust
 //! Crate-wide typed errors. No `process::exit` anywhere — every fallible op
 //! returns `Result<_, Error>` so RAII guards unwind (foundation §2.1).
@@ -141,6 +148,8 @@ pub enum Error {
     Parse(String),
     #[error("runner: {0}")]
     Runner(String),
+    #[error("compliance: {0}")] // regime-qualified, non-secret (Plan 2b maps ComplianceError here)
+    Compliance(String),
     #[error("io: {0}")]
     Io(#[from] std::io::Error),
 }
@@ -172,6 +181,7 @@ cd /home/djacu/dev/djacu/yubikey-loader
 git add overlays/top-level/keywright/Cargo.toml overlays/top-level/keywright/Cargo.lock overlays/top-level/keywright/crates/keywright-core/Cargo.toml overlays/top-level/keywright/crates/keywright-core/src/error.rs overlays/top-level/keywright/crates/keywright-core/src/lib.rs
 nix build .#keywright -L
 ```
+
 Expected: `Cargo.lock` gains `thiserror`; the build's `checkPhase` runs and reports `test result: ok` including `resolve_error_carries_id_and_nonsecret_reason` and `version_is_nonempty`.
 
 - [ ] **Step 4: Format and commit**
@@ -182,15 +192,17 @@ git add -A overlays/top-level/keywright
 git commit -m "feat(core): typed Error model + panic=unwind guard (no process::exit; no secret in any variant)"
 ```
 
----
+______________________________________________________________________
 
 ### Task 2: `registry` — decision types + the `DECISIONS` slice
 
 **Files:**
+
 - Create: `crates/keywright-core/src/registry.rs`
 - Modify: `crates/keywright-core/src/lib.rs` (`pub mod registry;`)
 
 **Interfaces:**
+
 - Consumes: `Error` (Task 1).
 - Produces: `ValueType`, `Algo`, `Expiry`, `Role`, `AlgoSpec`, `DefaultVal` (incl. `DeviceList(&'static [&'static str])`), `Decision` (with a `required: bool` field), `pub static DECISIONS: &[Decision]`, `pub fn decision(id: &str) -> Option<&'static Decision>`. Tasks 3/5 consume these.
 
@@ -199,6 +211,7 @@ git commit -m "feat(core): typed Error model + panic=unwind guard (no process::e
 - [ ] **Step 1: Write `registry.rs` (types + slice)**
 
 `crates/keywright-core/src/registry.rs`:
+
 ```rust
 //! The decision registry — every operator decision declared once (§3).
 //! CLI flags, TOML keys, audit fields all derive from this one slice.
@@ -207,7 +220,7 @@ git commit -m "feat(core): typed Error model + panic=unwind guard (no process::e
 pub enum ValueType { Bool, Enum(&'static [&'static str]), Uint, Expiry, AlgoProfile, DeviceList, Pin, Str }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Algo { Ed25519, Cv25519, Rsa(u16), NistP(u16), Brainpool(u16) }
+pub enum Algo { Ed25519, Ed448, Cv25519, Rsa(u16), NistP(u16), Brainpool(u16), Secp256k1 } // Ed448/secp256k1: representable so Plan 2b's compliance can forbid them under fips (§5)
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Expiry { Never, Days(u32) }
@@ -363,24 +376,29 @@ nix build .#keywright -L
 nix fmt && git add -A overlays/top-level/keywright
 git commit -m "feat(core): decision registry types + DECISIONS slice + surface/required invariants"
 ```
+
 Expected: `checkPhase` runs 4 `registry_tests` + the Task-1 tests, all `ok`.
 
----
+______________________________________________________________________
 
 ### Task 3: `config` — operator TOML + identity input
 
 **Files:**
+
 - Modify: `crates/keywright-core/Cargo.toml` (add `serde`, `toml`, `unicode-normalization`)
 - Create: `crates/keywright-core/src/config.rs`
 - Modify: `crates/keywright-core/src/lib.rs` (`pub mod config;`)
 
 **Interfaces:**
+
 - Consumes: `Error`, `Result` (Task 1).
+
 - Produces: `pub struct Config { pub values: BTreeMap<String, toml::Value>, pub identities: Vec<Identity> }`, `pub struct Identity { pub real_name: String, pub email: String }`, `pub fn parse_config(toml_text: &str) -> Result<Config>`, `pub fn parse_identity(real_name: &str, email: &str) -> Result<Identity>`, `pub fn is_interactive(batch: bool, non_interactive: bool, stdin_is_tty: bool) -> bool`. Task 5 (`resolve`) reads `Config::values`.
 
 - [ ] **Step 1: Add deps; write identity parsing**
 
 Add to `crates/keywright-core/Cargo.toml`:
+
 ```toml
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
@@ -388,6 +406,7 @@ unicode-normalization = "0.1"
 ```
 
 `crates/keywright-core/src/config.rs`:
+
 ```rust
 //! Operator TOML config + identity input (§4). Resolution-against-config is in
 //! `registry::resolve` (Task 5); this module only parses + validates inputs.
@@ -523,23 +542,28 @@ nix build .#keywright -L
 nix fmt && git add -A overlays/top-level/keywright
 git commit -m "feat(core): config TOML parse + identity input (NFC, RFC-5322 subset, batch)"
 ```
+
 Expected: `checkPhase` runs 4 config tests, all `ok`.
 
----
+______________________________________________________________________
 
 ### Task 4: `policy` — `/nix/store` canonicalized load
 
 **Files:**
+
 - Create: `crates/keywright-core/src/policy.rs`
 - Modify: `crates/keywright-core/src/lib.rs` (`pub mod policy;`)
 
 **Interfaces:**
+
 - Consumes: `Error`, `Result` (Task 1); `decision()` (Task 2).
+
 - Produces: `pub struct Policy { locked: BTreeMap<String, toml::Value> }` with `#[derive(Default)]`, `pub fn load_policy(path: &Path) -> Result<Policy>`, `pub fn load_policy_under(path: &Path, store_root: &Path) -> Result<Policy>` (testable seam), `Policy::locked(&self, id: &str) -> Option<&toml::Value>`, `Policy::is_locked(&self, id: &str) -> bool`. Task 5 reads locked values at the top of the precedence chain.
 
 - [ ] **Step 1: Write `policy.rs` with the canonicalization guard + tests**
 
 `crates/keywright-core/src/policy.rs`:
+
 ```rust
 //! Policy file load (§4/§9). Policy is baked read-only into /nix/store at ISO
 //! build time; we refuse any path that does not canonicalize to under the store.
@@ -672,28 +696,34 @@ nix build .#keywright -L
 nix fmt && git add -A overlays/top-level/keywright
 git commit -m "feat(core): policy load pinned + canonicalized under /nix/store (symlink/.. escape rejected); lockable-only"
 ```
+
 Expected: `checkPhase` runs 4 policy tests (incl. symlink-escape + `..`-traversal), all `ok`.
 
----
+______________________________________________________________________
 
 ### Task 5: `registry::resolve` — precedence + provenance → `ResolvedSet`
 
 **Files:**
+
 - Modify: `crates/keywright-core/Cargo.toml` (add `zeroize`)
 - Modify: `crates/keywright-core/src/registry.rs` (append the resolution half + one test mod)
 
 **Interfaces:**
+
 - Consumes: `DECISIONS`/`decision()`/`DefaultVal`/`Decision`/`Algo`/`Expiry`/`Role`/`AlgoSpec` (Task 2); `Config` (Task 3); `Policy` (Task 4); `Error` (Task 1).
+
 - Produces: `Provenance` (6 variants incl. `SessionFile`), `SecretString`, `ResolvedValue`, `Resolved`, `ResolvedSet`, `CliArgs { values: BTreeMap<String,String>, algo: BTreeMap<Role, AlgoSpec> }`, `pub fn resolve(cli: &CliArgs, config: &Config, policy: &Policy, interactive: bool) -> Result<ResolvedSet>`. **Plan 2b** wraps the returned `ResolvedSet` into `PlanResult`.
 
 - [ ] **Step 1: Add `zeroize`; append the resolution types**
 
 Add to `crates/keywright-core/Cargo.toml`:
+
 ```toml
 zeroize = { version = "1", features = ["derive"] }
 ```
 
 Append to `registry.rs`:
+
 ```rust
 use crate::config::Config;
 use crate::policy::Policy;
@@ -752,6 +782,7 @@ pub struct CliArgs {
 - [ ] **Step 2: Append `resolve()` + helpers**
 
 Append to `registry.rs`:
+
 ```rust
 /// Resolve every decision by precedence: policy-locked > CLI > config > default
 /// > (interactive prompt | non-interactive hard error, for `required` only).
@@ -883,7 +914,9 @@ fn parse_algo_profile(r: &RawVal) -> std::result::Result<BTreeMap<Role, AlgoSpec
 fn parse_algo(s: &str) -> std::result::Result<Algo, String> {
     match s {
         "ed25519" => Ok(Algo::Ed25519),
+        "ed448" => Ok(Algo::Ed448),
         "cv25519" => Ok(Algo::Cv25519),
+        "secp256k1" => Ok(Algo::Secp256k1),
         _ if s.starts_with("rsa") => s[3..].parse().map(Algo::Rsa).map_err(|_| format!("bad rsa size {s}")),
         _ if s.starts_with("nistp") => s[5..].parse().map(Algo::NistP).map_err(|_| format!("bad nist curve {s}")),
         _ if s.starts_with("brainpool") => s[9..].parse().map(Algo::Brainpool).map_err(|_| format!("bad brainpool {s}")),
@@ -895,6 +928,7 @@ fn parse_algo(s: &str) -> std::result::Result<Algo, String> {
 - [ ] **Step 3: Append ONE complete test mod (avoids the stray-brace pitfall)**
 
 Append to `registry.rs` (a single, self-contained `mod` — do not reopen `registry_tests`):
+
 ```rust
 #[cfg(test)]
 mod resolve_tests {
@@ -1005,18 +1039,21 @@ nix build .#keywright -L
 nix fmt && git add -A overlays/top-level/keywright
 git commit -m "feat(core): resolve() — precedence/provenance/required + algo merge → ResolvedSet"
 ```
+
 Expected: `checkPhase` runs the `registry_tests` + 7 `resolve_tests`, all `ok`.
 
----
+______________________________________________________________________
 
 ### Task 6: `runner` — typed subprocess + the `Secret` argv barrier
 
 **Files:**
+
 - Modify: `overlays/top-level/keywright/package.nix` (add `coreutils` to `nativeCheckInputs`; inject `KEYWRIGHT_TEST_CAT`)
 - Create: `crates/keywright-core/src/runner.rs`
 - Modify: `crates/keywright-core/src/lib.rs` (`pub mod runner;`)
 
 **Interfaces:**
+
 - Consumes: `Error`, `Result` (Task 1); `SecretString` (Task 5, for the `Secret` payload).
 - Produces: `pub struct Command`, `Command::new(bin: &str) -> Result<Self>`, `Command::arg(self, &str) -> Self` (NON-secret only), `Command::secret_stdin(self, Secret) -> Self`, `Command::args_ref(&self) -> &[String]`, `Command::run(&self) -> Result<Output>`, `pub struct Output { pub stdout: String, pub status_ok: bool }`, `pub struct Secret(pub SecretString)`. Plan 2b's `device`/§7 use this; Plan 3 adds gpg/cryptsetup.
 
@@ -1025,7 +1062,9 @@ Expected: `checkPhase` runs the `registry_tests` + 7 `resolve_tests`, all `ok`.
 - [ ] **Step 1: Make the package inject a sandbox-pure helper-binary path**
 
 `buildRustPackage` runs the unit tests in the sandbox (only `/nix/store` + `/bin/sh`). For the one test that actually spawns a process, the package provides a real `/nix/store` `cat` and exports its absolute path. Edit `overlays/top-level/keywright/package.nix`:
+
 - add `coreutils` to the function args:
+
 ```nix
 {
   lib,
@@ -1033,7 +1072,9 @@ Expected: `checkPhase` runs the `registry_tests` + 7 `resolve_tests`, all `ok`.
   coreutils,
 }:
 ```
+
 - add under the derivation attrs:
+
 ```nix
   nativeCheckInputs = [ coreutils ];
   # The runner spawn-test needs a real, absolute /nix/store binary to prove
@@ -1046,6 +1087,7 @@ Expected: `checkPhase` runs the `registry_tests` + 7 `resolve_tests`, all `ok`.
 - [ ] **Step 2: Write `runner.rs`**
 
 `crates/keywright-core/src/runner.rs`:
+
 ```rust
 //! Typed subprocess runner (§2.3). Build argv, pin binary to an absolute
 //! /nix/store path, feed secrets ONLY via stdin behind a `Secret` type the argv
@@ -1139,13 +1181,15 @@ nix build .#keywright -L
 nix fmt && git add -A overlays/top-level/keywright
 git commit -m "feat(core): typed runner; Secret-via-stdin argv barrier; absolute-path pin; sandbox-pure tests"
 ```
+
 Expected: `checkPhase` runs 3 runner tests (the stdin-delivery test uses the injected `KEYWRIGHT_TEST_CAT`), all `ok`.
 
----
+______________________________________________________________________
 
 ### Task 7: `parse` — mount/swap-topology parsers (fixtures)
 
 **Files:**
+
 - Modify: `crates/keywright-core/Cargo.toml` (add `serde_json`)
 - Create: `crates/keywright-core/src/parse.rs`
 - Create: `crates/keywright-core/tests/fixtures/lsblk-simple.json`, `findmnt-simple.json`, `proc-swaps-file.txt`, `mountinfo-simple.txt`
@@ -1154,17 +1198,21 @@ Expected: `checkPhase` runs 3 runner tests (the stdin-delivery test uses the inj
 **Scope:** 2a delivers the **mount + swap** topology parsers — `lsblk --json`, `findmnt --json`, `/proc/swaps`, `/proc/self/mountinfo`. The **storage source-resolution** parsers (`zpool status`, `mdadm`/sysfs, `bcache` sysfs) that map a dm/md/zvol device back to its physical members are delivered in **Plan 2b** alongside the `device` source-resolution recursion that consumes them.
 
 **Interfaces:**
+
 - Consumes: `Error`, `Result` (Task 1).
+
 - Produces: `pub struct BlockDevice { pub name: String, pub fstype: Option<String>, pub mountpoints: Vec<String>, pub children: Vec<BlockDevice> }`, `pub fn parse_lsblk_json(s: &str) -> Result<Vec<BlockDevice>>`; `pub struct MountEntry { pub source: String, pub target: String, pub fstype: String }`, `pub fn parse_findmnt_json(s: &str) -> Result<Vec<MountEntry>>`, `pub fn parse_mountinfo(s: &str) -> Result<Vec<MountEntry>>`; `pub enum SwapKind { Partition, File }`, `pub struct SwapEntry { pub source: String, pub kind: SwapKind }`, `pub fn parse_proc_swaps(s: &str) -> Result<Vec<SwapEntry>>`. **Plan 2b's `device`** consumes these.
 
 - [ ] **Step 1: Add `serde_json`; create fixtures**
 
 Add to `crates/keywright-core/Cargo.toml`:
+
 ```toml
 serde_json = "1"
 ```
 
 `tests/fixtures/lsblk-simple.json`:
+
 ```json
 { "blockdevices": [
   { "name": "sda", "fstype": null, "mountpoints": [null],
@@ -1176,6 +1224,7 @@ serde_json = "1"
 ```
 
 `tests/fixtures/findmnt-simple.json`:
+
 ```json
 { "filesystems": [
   { "source": "/dev/sda2", "target": "/", "fstype": "ext4",
@@ -1184,12 +1233,14 @@ serde_json = "1"
 ```
 
 `tests/fixtures/proc-swaps-file.txt`:
+
 ```
 Filename                                Type            Size            Used            Priority
 /swapfile                               file            8388604         0               -2
 ```
 
 `tests/fixtures/mountinfo-simple.txt`:
+
 ```
 36 35 8:2 / / rw,relatime shared:1 - ext4 /dev/sda2 rw
 37 36 8:1 / /boot rw,relatime shared:2 - vfat /dev/sda1 rw
@@ -1198,6 +1249,7 @@ Filename                                Type            Size            Used    
 - [ ] **Step 2: Write `parse.rs`**
 
 `crates/keywright-core/src/parse.rs`:
+
 ```rust
 //! Pure parsers for read-only mount/swap probes (§6). Plan 2a: mount + swap
 //! topology; Plan 2b adds zpool/mdadm/bcache source-resolution parsers. No
@@ -1341,9 +1393,10 @@ nix build .#keywright -L
 nix fmt && git add -A overlays/top-level/keywright
 git commit -m "feat(core): mount/swap-topology parsers (lsblk/findmnt/mountinfo/swaps) + fixtures"
 ```
+
 Expected: `checkPhase` runs the FULL `keywright-core` suite; 4 parse tests `ok`.
 
----
+______________________________________________________________________
 
 ### Task 8: Final whole-crate verification
 
@@ -1359,6 +1412,7 @@ git add -A overlays/top-level/keywright
 nix build .#keywright -L --rebuild   # force a fresh checkPhase even if cached
 ./result/bin/keywright --version
 ```
+
 Expected: build exits 0; `checkPhase` shows every module's tests `ok` (error/registry/config/policy/runner/parse); `keywright 0.0.1`.
 
 - [ ] **Step 2: Format idempotence**
@@ -1366,13 +1420,15 @@ Expected: build exits 0; `checkPhase` shows every module's tests `ok` (error/reg
 ```bash
 cd /home/djacu/dev/djacu/yubikey-loader && nix fmt && git status --porcelain
 ```
+
 Expected: `git status` clean. If `nix fmt` changed anything, `git add -A && git commit -m "style: treefmt"`.
 
----
+______________________________________________________________________
 
 ## Self-Review
 
 **1. Spec coverage (2a subset, §2–§4/§9):**
+
 - `error` + no-`process::exit` + **panic=unwind profile & compile_error! guard** (§9) → Task 1. ✓
 - `registry` types + `DECISIONS` + per-surface invariant + `required` + destructive-token independence (§3/§4) → Task 2. ✓
 - `config` TOML + identity (NFC, RFC-5322 subset, batch, dup-email, interactive) (§4) → Task 3. ✓
@@ -1386,7 +1442,7 @@ Expected: `git status` clean. If `nix fmt` changed anything, `git add -A && git 
 
 **3. Type consistency:** `Error`/`Result` (T1) everywhere; `Decision`/`DefaultVal`(+`DeviceList`)/`Algo`/`Expiry`/`Role`/`AlgoSpec`/`required` (T2) consumed by T5; `Config` (T3) + `Policy` (T4) consumed by `resolve()`; `SecretString` (T5) wrapped by `runner::Secret` (T6); `CliArgs{values,algo}` (T5) matches the per-role CLI seam; `Provenance` has all 6 spec variants; `coerce()` Enum arm uses `.copied()` (no `&&str` mismatch). `resolve` returns `ResolvedSet` (2a) vs `PlanResult` (2b) — stated in Global Constraints + T5 interfaces.
 
----
+______________________________________________________________________
 
 ## Execution Handoff
 

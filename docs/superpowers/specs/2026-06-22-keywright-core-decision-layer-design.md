@@ -52,7 +52,7 @@ Each decision is declared once in a **data-driven static slice**, with **per-sur
 ```rust
 pub enum ValueType { Bool, Enum(&'static [&'static str]), Uint, Expiry, AlgoProfile, DeviceList, Pin, Str }
 
-pub enum Algo { Ed25519, Cv25519, Rsa(u16), NistP(u16), Brainpool(u16) }   // const-initializable
+pub enum Algo { Ed25519, Ed448, Cv25519, Rsa(u16), NistP(u16), Brainpool(u16), Secp256k1 }   // const-initializable; Ed448/secp256k1 representable so §5 can forbid them under fips
 pub enum Expiry { Never, Days(u32) }                                       // const-initializable
 pub enum Role  { Certify, Sign, Auth, Encrypt }
 pub struct AlgoSpec { pub algo: Algo, pub expiry: Expiry }
