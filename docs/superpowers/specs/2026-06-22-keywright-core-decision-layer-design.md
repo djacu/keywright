@@ -70,6 +70,7 @@ pub struct Decision {
     pub config: bool,            // accepted from TOML?
     pub secret: bool,            // value is a secret → entry via fd/stdin only; forces cli=false, config=false
     pub audit_redact: bool,      // redact in audit + dry-run preview (implied by secret; may also be set alone)
+    pub doc: &'static str,       // single-source human description → CLI --help, dry-run preview, audit; non-empty (consistency test)
 }
 pub static DECISIONS: &[Decision] = &[ /* see the draft table below */ ];
 ```

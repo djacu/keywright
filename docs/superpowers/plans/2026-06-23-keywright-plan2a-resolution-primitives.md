@@ -204,7 +204,7 @@ ______________________________________________________________________
 **Interfaces:**
 
 - Consumes: `Error` (Task 1).
-- Produces: `ValueType`, `Algo`, `Expiry`, `Role`, `AlgoSpec`, `DefaultVal` (incl. `DeviceList(&'static [&'static str])`), `Decision` (with a `required: bool` field), `pub static DECISIONS: &[Decision]`, `pub fn decision(id: &str) -> Option<&'static Decision>`. Tasks 3/5 consume these.
+- Produces: `ValueType`, `Algo`, `Expiry`, `Role`, `AlgoSpec`, `DefaultVal` (incl. `DeviceList(&'static [&'static str])`), `Decision` (with `required: bool` + a `doc: &'static str` single-source description), `pub static DECISIONS: &[Decision]`, `pub fn decision(id: &str) -> Option<&'static Decision>`. Tasks 3/5 consume these; `doc` feeds the later CLI `--help` / preview / audit.
 
 > **Design note (refines spec §3 struct):** `Decision` gains `required: bool`. The spec's precedence terminal is "(interactive prompt | non-interactive **hard error**)" — but that hard error must fire only for decisions that genuinely must have a value. `required=true` for `real-name`/`email` (no key without a UID); everything else is `required=false` (has a default, is optional, or is a secret resolved out-of-band). `device-allowlist` carries an empty-list default (`[]`, matching the spec table), not `None`.
 
@@ -254,6 +254,7 @@ pub struct Decision {
     pub config: bool,       // accepted from TOML?
     pub secret: bool,       // value is a secret → fd/stdin entry only (skipped by resolve())
     pub audit_redact: bool, // redact in audit + dry-run preview
+    pub doc: &'static str,  // single-source human description → CLI --help / dry-run preview / audit
 }
 
 const ED: Algo = Algo::Ed25519;
@@ -270,38 +271,64 @@ static DEFAULT_ALGO: &[(Role, AlgoSpec)] = &[
 
 /// Every decision, declared once (spec §3 table). The consistency tests below
 /// enforce the per-surface rules.
+// Each row's final arg is `doc`: the single-source human description (→ CLI --help,
+// dry-run preview, audit). The consistency test asserts every doc is non-empty.
 pub static DECISIONS: &[Decision] = &[
-    d("compliance-profile", ValueType::Enum(&["drduh","fips","cnsa","bsi"]), DefaultVal::Enum("drduh"), false, true, true, true, false, false),
-    d("cnsa-use-case",      ValueType::Enum(&["nss-2030","nss-2033"]),        DefaultVal::Enum("nss-2030"), false, true, true, true, false, false),
-    d("algo",               ValueType::AlgoProfile, DefaultVal::Algo(DEFAULT_ALGO), false, true, true, true, false, false),
-    d("subkey-expiry",      ValueType::Expiry, DefaultVal::Expiry(Y2), false, true, true, true, false, false),
-    d("pin-min-length",     ValueType::Uint,   DefaultVal::Uint(6),    false, true, true, true, false, false),
-    d("pin-source",         ValueType::Enum(&["generated","chosen"]), DefaultVal::Enum("generated"), false, true, true, true, false, false),
-    d("admin-pin-scope",    ValueType::Enum(&["per-card","fleet-shared"]), DefaultVal::Enum("per-card"), false, true, true, true, false, false),
-    d("reset-code",         ValueType::Bool, DefaultVal::Bool(true),  false, true, true, true, false, false),
-    d("factory-reset-required", ValueType::Bool, DefaultVal::Bool(true), false, true, true, true, false, false),
-    d("audit-required",     ValueType::Bool, DefaultVal::Bool(true),  false, true, true, true, false, false),
-    d("allow-bootstrap",    ValueType::Bool, DefaultVal::Bool(true),  false, true, true, true, false, false),
-    d("device-allowlist",   ValueType::DeviceList, DefaultVal::DeviceList(&[]), false, true, true, true, false, false),
-    d("on-failure",         ValueType::Enum(&["abort-leave-clean","factory-reset-and-abort"]), DefaultVal::Enum("abort-leave-clean"), false, true, true, true, false, false),
-    d("target-card-serial", ValueType::Str, DefaultVal::None, false, false, true, true, false, false), // optional
-    d("asserted-date",      ValueType::Str, DefaultVal::None, false, false, true, true, false, false), // optional
-    d("real-name",          ValueType::Str, DefaultVal::None, true,  false, true, true, false, false), // REQUIRED
-    d("email",              ValueType::Str, DefaultVal::None, true,  false, true, true, false, false), // REQUIRED
+    d("compliance-profile", ValueType::Enum(&["drduh","fips","cnsa","bsi"]), DefaultVal::Enum("drduh"), false, true, true, true, false, false,
+      "Compliance regime to enforce: drduh (standalone) or fips/cnsa/bsi. Gates algorithms, key sizes, and expiry."),
+    d("cnsa-use-case",      ValueType::Enum(&["nss-2030","nss-2033"]),        DefaultVal::Enum("nss-2030"), false, true, true, true, false, false,
+      "CNSA 2.0 transitional use case selecting the expiry ceiling: nss-2030 (default) or nss-2033."),
+    d("algo",               ValueType::AlgoProfile, DefaultVal::Algo(DEFAULT_ALGO), false, true, true, true, false, false,
+      "Per-role key algorithm + expiry profile for certify/sign/auth/encrypt."),
+    d("subkey-expiry",      ValueType::Expiry, DefaultVal::Expiry(Y2), false, true, true, true, false, false,
+      "Default expiry for the sign/auth/encrypt subkeys; the certify key never expires."),
+    d("pin-min-length",     ValueType::Uint,   DefaultVal::Uint(6),    false, true, true, true, false, false,
+      "Minimum YubiKey PIN length (card minimum 6; FIPS requires >= 8)."),
+    d("pin-source",         ValueType::Enum(&["generated","chosen"]), DefaultVal::Enum("generated"), false, true, true, true, false, false,
+      "Whether PINs are tool-generated or operator-chosen (entered via fd/stdin)."),
+    d("admin-pin-scope",    ValueType::Enum(&["per-card","fleet-shared"]), DefaultVal::Enum("per-card"), false, true, true, true, false, false,
+      "Admin PIN scope: per-card (default) or fleet-shared (a documented single point of compromise)."),
+    d("reset-code",         ValueType::Bool, DefaultVal::Bool(true),  false, true, true, true, false, false,
+      "Generate a Reset Code so a user can reset their own User PIN without the Admin PIN."),
+    d("factory-reset-required", ValueType::Bool, DefaultVal::Bool(true), false, true, true, true, false, false,
+      "Require a factory reset of a fresh or dirty card before provisioning."),
+    d("audit-required",     ValueType::Bool, DefaultVal::Bool(true),  false, true, true, true, false, false,
+      "Require a signed, hash-chained audit record for every provisioning; refuse to proceed without it."),
+    d("allow-bootstrap",    ValueType::Bool, DefaultVal::Bool(true),  false, true, true, true, false, false,
+      "Allow a bootstrap User PIN to be set for first use, to be changed by the user on first login."),
+    d("device-allowlist",   ValueType::DeviceList, DefaultVal::DeviceList(&[]), false, true, true, true, false, false,
+      "by-id allowlist of internal (rule-2) disks usable as backup/export targets; never re-includes a rule-1 (in-use) disk."),
+    d("on-failure",         ValueType::Enum(&["abort-leave-clean","factory-reset-and-abort"]), DefaultVal::Enum("abort-leave-clean"), false, true, true, true, false, false,
+      "Behavior when a provisioning step fails: abort-leave-clean, or factory-reset-and-abort."),
+    d("target-card-serial", ValueType::Str, DefaultVal::None, false, false, true, true, false, false,
+      "If set, the provisioned card's serial must match this value or the run aborts."),
+    d("asserted-date",      ValueType::Str, DefaultVal::None, false, false, true, true, false, false,
+      "Operator-asserted current date (RFC-3339 UTC) for non-interactive runs; the clock upper bound, must be >= the baked floor."),
+    d("real-name",          ValueType::Str, DefaultVal::None, true,  false, true, true, false, false,
+      "OpenPGP UID real name for this identity. (Required.)"),
+    d("email",              ValueType::Str, DefaultVal::None, true,  false, true, true, false, false,
+      "OpenPGP UID email for this identity (RFC-5322 subset). (Required.)"),
     // secrets: fd/stdin only — cli=false, config=false, audit_redact=true; resolve() skips them
-    d("user-pin",           ValueType::Pin, DefaultVal::None, false, false, false, false, true, true),
-    d("admin-pin",          ValueType::Pin, DefaultVal::None, false, false, false, false, true, true),
-    d("certify-passphrase", ValueType::Pin, DefaultVal::None, false, false, false, false, true, true),
+    d("user-pin",           ValueType::Pin, DefaultVal::None, false, false, false, false, true, true,
+      "YubiKey User PIN; entered via fd/stdin only, never argv/config."),
+    d("admin-pin",          ValueType::Pin, DefaultVal::None, false, false, false, false, true, true,
+      "YubiKey Admin PIN; entered via fd/stdin only, never argv/config."),
+    d("certify-passphrase", ValueType::Pin, DefaultVal::None, false, false, false, false, true, true,
+      "Passphrase protecting the offline certify key; entered via fd/stdin only."),
     // destructive tokens: CLI-only — config=false
-    d("confirm-format",     ValueType::Bool, DefaultVal::Bool(false), false, false, true, false, false, false),
-    d("confirm-keytocard",  ValueType::Bool, DefaultVal::Bool(false), false, false, true, false, false, false),
-    d("force",              ValueType::Bool, DefaultVal::Bool(false), false, false, true, false, false, false),
+    d("confirm-format",     ValueType::Bool, DefaultVal::Bool(false), false, false, true, false, false, false,
+      "Explicit acknowledgement to format/erase a selected target drive. CLI-only; distinct from confirm-keytocard and force."),
+    d("confirm-keytocard",  ValueType::Bool, DefaultVal::Bool(false), false, false, true, false, false, false,
+      "Explicit acknowledgement of the irreversible keytocard (moving subkeys onto the card). CLI-only; distinct from confirm-format and force."),
+    d("force",              ValueType::Bool, DefaultVal::Bool(false), false, false, true, false, false, false,
+      "Override the single-shot idempotency guard (re-format a drive that already holds a Keywright backup, or re-provision an identity already backed up here). Does NOT bypass device safety or any other gate. CLI-only."),
 ];
 
 #[allow(clippy::too_many_arguments)]
 const fn d(id: &'static str, value_type: ValueType, default: DefaultVal, required: bool,
-           lockable: bool, cli: bool, config: bool, secret: bool, audit_redact: bool) -> Decision {
-    Decision { id, value_type, default, required, lockable, cli, config, secret, audit_redact }
+           lockable: bool, cli: bool, config: bool, secret: bool, audit_redact: bool,
+           doc: &'static str) -> Decision {
+    Decision { id, value_type, default, required, lockable, cli, config, secret, audit_redact, doc }
 }
 
 pub fn decision(id: &str) -> Option<&'static Decision> {
@@ -334,6 +361,15 @@ mod registry_tests {
         for d in DECISIONS {
             assert!(seen.insert(d.id), "duplicate decision id {}", d.id);
             assert!(d.id.chars().all(|c| c.is_ascii_lowercase() || c == '-'), "non-kebab id {}", d.id);
+        }
+    }
+
+    #[test]
+    fn every_decision_has_a_nonempty_doc() {
+        // WHY (§3): `doc` is the single source of the CLI --help / dry-run preview /
+        // audit description; an empty doc would ship a flag/field with no text.
+        for d in DECISIONS {
+            assert!(!d.doc.trim().is_empty(), "decision {} has no doc string", d.id);
         }
     }
 
