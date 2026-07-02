@@ -52,7 +52,7 @@ Each decision is declared once in a **data-driven static slice**, with **per-sur
 ```rust
 pub enum ValueType { Bool, Enum(&'static [&'static str]), Uint, Expiry, AlgoProfile, DeviceList, Pin, Str }
 
-pub enum Algo { Ed25519, Cv25519, Rsa(u16), NistP(u16), Brainpool(u16) }   // const-initializable
+pub enum Algo { Ed25519, Ed448, Cv25519, Rsa(u16), NistP(u16), Brainpool(u16), Secp256k1 }   // const-initializable; Ed448/secp256k1 representable so §5 can forbid them under fips
 pub enum Expiry { Never, Days(u32) }                                       // const-initializable
 pub enum Role  { Certify, Sign, Auth, Encrypt }
 pub struct AlgoSpec { pub algo: Algo, pub expiry: Expiry }
@@ -64,11 +64,13 @@ pub struct Decision {
     pub id: &'static str,        // canonical id → flag/key/field name
     pub value_type: ValueType,
     pub default: DefaultVal,
+    pub required: bool,          // unsupplied + no default + non-interactive ⇒ hard error (true only for real-name/email)
     pub lockable: bool,          // may a policy lock this field?
     pub cli: bool,               // exposed as a CLI flag?
     pub config: bool,            // accepted from TOML?
     pub secret: bool,            // value is a secret → entry via fd/stdin only; forces cli=false, config=false
     pub audit_redact: bool,      // redact in audit + dry-run preview (implied by secret; may also be set alone)
+    pub doc: &'static str,       // single-source human description → CLI --help, dry-run preview, audit; non-empty (consistency test)
 }
 pub static DECISIONS: &[Decision] = &[ /* see the draft table below */ ];
 ```
@@ -100,7 +102,7 @@ pub fn resolve(cli: &CliArgs, config: &Config, policy: &Policy, interactive: boo
     -> Result<PlanResult, Error>;
 ```
 
-Precedence per decision: **policy-locked > CLI > config > default > (interactive prompt | non-interactive hard error)**. A policy-locked field rejects any lower-precedence override with a named error. Per-value range/format validation happens during resolution; **a resolution-time validation error carries the decision `id` + a non-secret reason (e.g. "pin too short: len < 8") and never embeds the secret value.** **All cross-field constraints over resolved decisions live in `compliance::validate` (§5)** (full `ResolvedSet`); there is no per-decision `policy_hook`. (Aggregate constraints over *discovered devices* — e.g. ≥2 backup drives — are not decisions and live in `device::check_roles`, §6.)
+Precedence per decision: **policy-locked > CLI > config > default > (interactive prompt | non-interactive hard error)**. The terminal **non-interactive hard error** fires only for **`required`** decisions (the `required` field above; `true` only for `real-name`/`email` — there is no key without a UID); an unsupplied **optional** decision (no default, `required=false` — e.g. `target-card-serial`, `asserted-date`) is left **unresolved**, not an error. **`secret=true` decisions are never resolved through this chain** — their values arrive via fd/stdin and carry `Provenance::SessionFile` (§7), so `resolve` skips them. A policy-locked field rejects any **conflicting** lower-precedence override — a CLI/config value *different* from the lock — with a named error (fail-loud, not a silent substitution); a redundant *same-value* setting is accepted (provenance stays `PolicyLocked`). Per-value range/format validation happens during resolution; **a resolution-time validation error carries the decision `id` + a non-secret reason (e.g. "pin too short: len < 8") and never embeds the secret value.** **All cross-field constraints over resolved decisions live in `compliance::validate` (§5)** (full `ResolvedSet`); there is no per-decision `policy_hook`. (Aggregate constraints over *discovered devices* — e.g. ≥2 backup drives — are not decisions and live in `device::check_roles`, §6.)
 
 **`AlgoProfile`** is a single `Decision` (`id = "algo"`, `value_type = AlgoProfile`) resolving to `BTreeMap<Role, AlgoSpec>`. TOML — a nested `[algo]` table (the only nested decision; the mapper special-cases it):
 
@@ -116,25 +118,25 @@ CLI for `AlgoProfile`: per-role flags `--algo-<role> <algo>[:<expiry>]`.
 
 **Draft decision table** (non-exhaustive; the implementation plan enumerates the full slice):
 
-| id | value_type | default | lockable | cli | config | secret | audit_redact |
-|---|---|---|---|---|---|---|---|
-| `compliance-profile` | Enum[drduh,fips,cnsa,bsi] | `drduh` | yes | y | y | n | n |
-| `cnsa-use-case` | Enum[nss-2030,nss-2033] | `nss-2030` | yes | y | y | n | n |
-| `algo` | AlgoProfile | ed25519 C/S/A · cv25519 E | yes | y | y | n | n |
-| `subkey-expiry` | Expiry | `Days(730)` | yes | y | y | n | n |
-| `pin-min-length` | Uint | `6` (fips ⇒ ≥8) | yes | y | y | n | n |
-| `pin-source` | Enum[generated,chosen] | `generated` | yes | y | y | n | n |
-| `admin-pin-scope` | Enum[per-card,fleet-shared] | `per-card` | yes | y | y | n | n |
-| `reset-code` | Bool | `true` | yes | y | y | n | n |
-| `factory-reset-required` | Bool | `true` | yes | y | y | n | n |
-| `audit-required` | Bool | `true` | yes | y | y | n | n |
-| `allow-bootstrap` | Bool | `true` | yes | y | y | n | n |
-| `device-allowlist` | DeviceList | `[]` | yes | y | y | n | n |
-| `on-failure` | Enum[abort-leave-clean,factory-reset-and-abort] | `abort-leave-clean` | yes | y | y | n | n |
-| `target-card-serial` | Str | `None` | no | y | y | n | n |
-| `asserted-date` | Str (RFC-3339) | `None` | no | y | y | n | n |
-| `real-name` | Str | `None` | no | y | y | n | n |
-| `email` | Str | `None` | no | y | y | n | n |
+| id | value_type | default | required | lockable | cli | config | secret | audit_redact |
+|---|---|---|---|---|---|---|---|---|
+| `compliance-profile` | Enum[drduh,fips,cnsa,bsi] | `drduh` | n | yes | y | y | n | n |
+| `cnsa-use-case` | Enum[nss-2030,nss-2033] | `nss-2030` | n | yes | y | y | n | n |
+| `algo` | AlgoProfile | ed25519 C/S/A · cv25519 E | n | yes | y | y | n | n |
+| `subkey-expiry` | Expiry | `Days(730)` | n | yes | y | y | n | n |
+| `pin-min-length` | Uint | `6` (fips ⇒ ≥8) | n | yes | y | y | n | n |
+| `pin-source` | Enum[generated,chosen] | `generated` | n | yes | y | y | n | n |
+| `admin-pin-scope` | Enum[per-card,fleet-shared] | `per-card` | n | yes | y | y | n | n |
+| `reset-code` | Bool | `true` | n | yes | y | y | n | n |
+| `factory-reset-required` | Bool | `true` | n | yes | y | y | n | n |
+| `audit-required` | Bool | `true` | n | yes | y | y | n | n |
+| `allow-bootstrap` | Bool | `true` | n | yes | y | y | n | n |
+| `device-allowlist` | DeviceList | `[]` | n | yes | y | y | n | n |
+| `on-failure` | Enum[abort-leave-clean,factory-reset-and-abort] | `abort-leave-clean` | n | yes | y | y | n | n |
+| `target-card-serial` | Str | `None` | n | no | y | y | n | n |
+| `asserted-date` | Str (RFC-3339) | `None` | n | no | y | y | n | n |
+| `real-name` | Str | `None` | **y** | no | y | y | n | n |
+| `email` | Str | `None` | **y** | no | y | y | n | n |
 | `user-pin` / `admin-pin` / `certify-passphrase` | Pin | `None` | no | **n** | **n** | **y** | **y** |
 | `confirm-format` / `confirm-keytocard` / `force` | Bool (token) | `false` | no | y | **n** | n | n |
 
