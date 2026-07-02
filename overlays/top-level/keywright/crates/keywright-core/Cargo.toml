@@ -2,3 +2,6 @@
 name = "keywright-core"
 version = "0.0.1"
 edition = "2024"
+
+[dependencies]
+thiserror = "2.0.18"
