@@ -6,6 +6,7 @@
 compile_error!("keywright-core requires panic=unwind (see workspace Cargo.toml profiles, spec §9)");
 
 pub mod errors;
+pub mod registry;
 
 pub use errors::{Error, Result};
 

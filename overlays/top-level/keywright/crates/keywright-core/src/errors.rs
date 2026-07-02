@@ -34,7 +34,10 @@ mod tests {
     fn resolve_error_carries_id_and_nonsecret_reason() {
         // WHY (§3): a resolution error must surface the decision id + a non-secret
         // reason and NEVER the secret value.
-        let e = Error::Resolve { id: "pin-min-length", reason: "len < 8".into() };
+        let e = Error::Resolve {
+            id: "pin-min-length",
+            reason: "len < 8".into(),
+        };
         let rendered = e.to_string();
         assert!(rendered.contains("pin-min-length"));
         assert!(rendered.contains("len < 8"));
